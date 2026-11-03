@@ -166,6 +166,15 @@ final class App
             Monitor::setSilenced((string)($_POST['device'] ?? ''), ($_POST['on'] ?? '') === '1');
             redirect('/');
         }
+        if ($path === '/actions/light' && $admin) {
+            $on = ($_POST['state'] ?? '') === 'on';
+            Cuts::simulate($on);
+            $ret = (string)($_POST['return'] ?? '/');
+            if ($ret !== '/' && !preg_match('#^/services/\d+$#', $ret)) {
+                $ret = '/';
+            }
+            self::back($ret, 'Pretended the pulpit light turned ' . ($on ? 'on' : 'off') . ' at ' . fmt_local(Clock::now(), 'g:i:s A') . '.');
+        }
         if (preg_match('#^/services/(\d+)/(skip|unskip|intro|cuts|resetcuts|retry)$#', $path, $m)) {
             $id = (int)$m[1];
             $to = '/services/' . $id;

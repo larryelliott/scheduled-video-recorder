@@ -91,6 +91,8 @@ class Agent:
             self.obs.ensure_running()
             rec = self.obs.is_recording()
             self.last_obs_ok = True
+            if self.last_message.startswith("OBS:"):
+                self.last_message = ""
             if not self.state["record_dir"]:
                 self.state["record_dir"] = self.obs.record_dir() or ""
             return rec

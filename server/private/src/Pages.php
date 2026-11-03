@@ -84,7 +84,11 @@ final class Pages
             . View::post('/actions/stop', 'Stop recording now', 'btn danger', 'Stop the recording now?')
             . View::post('/actions/refresh', 'Refresh schedule', 'btn')
             . (Auth::isAdmin() ? View::post('/actions/test', 'Run a test recording', 'btn', 'Record a 100 second test? The Windows PC will record, trim and upload it.') : '')
-            . '</div></section>';
+            . '</div>'
+            . (Auth::isAdmin() ? '<p class="muted">Pretend the pulpit light (for testing):</p><div class="actions">'
+                . View::post('/actions/light', 'Pretend light ON', 'btn', '', ['state' => 'on', 'return' => '/'])
+                . View::post('/actions/light', 'Pretend light OFF', 'btn', '', ['state' => 'off', 'return' => '/']) . '</div>' : '')
+            . '</section>';
 
         $ready = Services::latestReady();
         if ($ready !== null) {
@@ -167,17 +171,29 @@ final class Pages
             . '<label>Start<input type="time" step="1" name="start" value="' . ($cs !== null ? h(fmt_local($cs, 'H:i:s')) : '') . '" required></label>'
             . '<label>End<input type="time" step="1" name="end" value="' . ($ce !== null ? h(fmt_local($ce, 'H:i:s')) : '') . '" required></label>'
             . '<button class="btn">Use these times and process</button></form>'
-            . ($s['cut_source'] === 'manual' ? View::post("/services/$id/resetcuts", 'Go back to the light sensor times', 'btn') : '');
+            . ($s['cut_source'] === 'manual' ? View::post("/services/$id/resetcuts", 'Go back to the light sensor times', 'btn') : '')
+            . (Auth::isAdmin() ? '<p class="muted">Pretend the pulpit light (the light must stay on for at least '
+                . h((string)Env::int('CUT_MIN_SECONDS', 180)) . ' seconds to count as a sermon):</p><div class="actions">'
+                . View::post('/actions/light', 'Pretend light ON', 'btn small', '', ['state' => 'on', 'return' => "/services/$id"])
+                . View::post('/actions/light', 'Pretend light OFF', 'btn small', '', ['state' => 'off', 'return' => "/services/$id"]) . '</div>' : '');
         [$from, $to] = Cuts::window((int)$s['start_utc']);
         $ev = Cuts::events($from, $to);
         $evHtml = '';
         foreach ($ev as $e) {
-            $evHtml .= '<li class="' . ((float)$e['lux'] > (float)Env::get('CUT_LUX_ON', '100') ? 'hi' : '') . '">' . h(fmt_local((int)$e['ts_utc'], 'g:i:s A')) . ' reading ' . h(round((float)$e['lux'])) . ' lux</li>';
+            $evHtml .= '<li class="' . ((float)$e['lux'] > (float)Env::get('CUT_LUX_ON', '100') ? 'hi' : '') . '">' . h(fmt_local((int)$e['ts_utc'], 'g:i:s A')) . ' reading ' . h(round((float)$e['lux'])) . ' lux' . (($e['fw'] ?? '') === 'manual' ? ' (pretend)' : '') . '</li>';
         }
         $body .= '<details><summary>Light sensor readings (' . count($ev) . ')</summary><ul class="events">' . ($evHtml ?: '<li>No readings in the window.</li>') . '</ul></details></section>';
 
         // Recording window / skip.
-        $body .= '<section class="card"><h2>Recording</h2><p>Window ' . h(fmt_local($ra, 'g:i A')) . ' to ' . h(fmt_local($rb, 'g:i A')) . '.</p><div class="actions">'
+        $vs = $s['video_started_utc'] !== null ? (int)$s['video_started_utc'] : null;
+        $vend = $s['recording_stopped_utc'] !== null ? (int)$s['recording_stopped_utc'] : null;
+        if ($vs !== null) {
+            $actual = '<p><strong>Recorded</strong> ' . h(fmt_local($vs, 'g:i:s A')) . ' to '
+                . ($vend !== null && $vend >= $vs ? h(fmt_local($vend, 'g:i:s A')) . ' (' . h(fmt_duration($vend - $vs)) . ')' : 'now, still recording') . '.</p>';
+        } else {
+            $actual = '<p class="muted">Not recorded yet.</p>';
+        }
+        $body .= '<section class="card"><h2>Recording</h2>' . $actual . '<p class="muted">Planned window ' . h(fmt_local($ra, 'g:i:s A')) . ' to ' . h(fmt_local($rb, 'g:i:s A')) . '.</p><div class="actions">'
             . ((int)$s['skip'] === 1 ? View::post("/services/$id/unskip", 'Record this service again', 'btn')
                : ($s['status'] === 'scheduled' ? View::post("/services/$id/skip", 'Skip this service', 'btn', 'Skip recording this service?') : ''))
             . '</div></section>';

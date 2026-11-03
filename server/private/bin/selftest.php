@@ -87,7 +87,7 @@ $next = Schedule::next();
 check('next service is Nov 1', $next !== null && (int)$next['start_utc'] === at('2026-11-01 10:30'));
 [$wa, $wb] = Schedule::window($next);
 check('recording window is start-10 min to +100 min', $wa === at('2026-11-01 10:20') && $wb === at('2026-11-01 10:20') + 6000);
-check('output name starts with the date', Schedule::outputName($next) === '2026-11-01-All-Saints-Day.mp4', Schedule::outputName($next));
+check('output name is the subtitle with hyphens', Schedule::outputName($next) === 'All-Saints-Day.mp4', Schedule::outputName($next));
 check('intro carries sheet text and config', Schedule::intro($next)['text4'] === 'Fourth line' && Schedule::intro($next)['title'] === 'Test Church Sermons');
 Services::saveIntro((int)$next['id'], ['subtitle' => 'All Saints Day (edited)']);
 Schedule::refresh();
@@ -130,9 +130,13 @@ check('no job while the light is still on', $hb['job'] === null);
 Clock::$fixed = at('2026-11-01 11:08');
 Api::esp(['lux' => 12, 'duration' => 800000, 'timestamp' => Clock::now()]);
 $hb = Api::heartbeat(['state' => 'recording', 'recording' => true]);
+check('status card shows the PC as recording', strpos(View::statusCard(), 'badge rec') !== false);
+Api::heartbeat(['state' => 'idle', 'recording' => false]);
+check('status card flags a PC that is not recording while the site says it is', strpos(View::statusCard(), 'Recording problem') !== false);
+Api::heartbeat(['state' => 'recording', 'recording' => true]);
 check('a job appears once the light turns off, even while still recording', $hb['job'] !== null
     && $hb['job']['cut_start_utc'] === at('2026-11-01 10:55') && $hb['job']['cut_end_utc'] === at('2026-11-01 11:08'), json_encode($hb['job']));
-check('job carries the intro and file name', $hb['job']['intro']['title'] === 'Test Church Sermons' && $hb['job']['output_name'] === '2026-11-01-x.mp4', json_encode($hb['job']['output_name'] ?? null));
+check('job carries the intro and file name', $hb['job']['intro']['title'] === 'Test Church Sermons' && $hb['job']['output_name'] === 'x.mp4', json_encode($hb['job']['output_name'] ?? null));
 
 Api::job(['service_id' => $sid, 'state' => 'running', 'progress' => 40, 'message' => 'trimming']);
 check('job shows as processing', Services::state(Services::get($sid))[0] === 'processing');
@@ -142,7 +146,7 @@ Api::recording(['service_id' => $sid, 'event' => 'stopped', 'ts_utc' => Clock::n
 
 $tmp = Files::dir() . '/up.part';
 file_put_contents($tmp, str_repeat('v', 2048));
-$up = Api::finishUpload($sid, '2026-11-01-x.mp4', $tmp, 2048);
+$up = Api::finishUpload($sid, 'x.mp4', $tmp, 2048);
 check('upload is stored', !empty($up['ok']) && $up['size'] === 2048, json_encode($up));
 $bad = Files::dir() . '/up2.part';
 file_put_contents($bad, 'abc');
@@ -194,6 +198,14 @@ Services::setSkip((int)$nx['id'], false);
 $s = Services::startNow();
 check('start now creates a manual recording when nothing is near', $s['subtitle'] === 'Manual recording' && (int)$s['rec_start_utc'] === Clock::now());
 check('stop now ends the window', Services::stopNow() && Schedule::window(Services::get((int)$s['id']))[1] === Clock::now());
+Api::recording(['service_id' => (int)$s['id'], 'event' => 'started', 'video_started_utc' => Clock::now()]);
+$seenBefore = (int)Monitor::device('esp')['last_seen_utc'];
+Cuts::simulate(true);
+Clock::$fixed += 240;
+Cuts::simulate(false);
+$sv = Services::get((int)$s['id']);
+check('pretend light on then off produces sermon times', $sv['job_state'] === 'pending' && (int)$sv['cut_end_utc'] - (int)$sv['cut_start_utc'] === 240, json_encode([$sv['job_state'], $sv['cut_start_utc'], $sv['cut_end_utc']]));
+check('pretend readings do not count as the sensor checking in', (int)Monitor::device('esp')['last_seen_utc'] === $seenBefore);
 $t = Services::createTest();
 $hb = Api::heartbeat([]);
 check('test recording is offered to the PC', $hb['next_service']['id'] === $t && $hb['next_service']['is_test'] === 1);

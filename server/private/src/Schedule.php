@@ -61,12 +61,11 @@ final class Schedule
         ];
     }
 
-    /** e.g. 2026-11-01-All-Saints-Day.mp4 (date first so names never collide across years). */
+    /** Subtitle with every run of non-alphanumerics turned into one hyphen, e.g. All-Saints-Day.mp4 (same rule as the old process). */
     public static function outputName(array $s): string
     {
-        $title = trim((string)$s['subtitle']) !== '' ? (string)$s['subtitle'] : 'Sermon';
-        $slug = slug($title);
-        return fmt_local((int)$s['start_utc'], 'Y-m-d') . '-' . ($slug !== '' ? $slug : 'Sermon') . '.mp4';
+        $slug = slug((string)$s['subtitle']);
+        return ($slug !== '' ? $slug : 'untitled') . '.mp4';
     }
 
     public static function fetch(): ?string

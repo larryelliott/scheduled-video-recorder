@@ -8,7 +8,7 @@ final class Cuts
 {
     public static function events(int $from, int $to): array
     {
-        return Db::all('SELECT ts_utc, lux FROM light_events WHERE ts_utc >= ? AND ts_utc <= ? ORDER BY ts_utc, id', [$from, $to]);
+        return Db::all('SELECT ts_utc, lux, fw FROM light_events WHERE ts_utc >= ? AND ts_utc <= ? ORDER BY ts_utc, id', [$from, $to]);
     }
 
     public static function window(int $serviceStart): array
@@ -90,6 +90,15 @@ final class Cuts
             'end'    => $best[1] + $padEnd,
             'note'   => implode(' ', $notes),
         ];
+    }
+
+    /** Adds a pretend pulpit-light reading (150 lux = on, 5 lux = off) stamped with the current time. */
+    public static function simulate(bool $on): void
+    {
+        $now = Clock::now();
+        Db::run('INSERT INTO light_events (ts_utc, lux, duration, received_utc, rssi, fw) VALUES (?, ?, ?, ?, ?, ?)',
+            [$now, $on ? 150.0 : 5.0, 0, $now, null, 'manual']);
+        self::refreshActive();
     }
 
     /** Recomputes cuts for services that are recording or recorded and not yet processed. */

@@ -57,8 +57,16 @@ final class View
         $next = Schedule::next();
         $agentSeen = $agent['last_seen_utc'] ?? null;
         $agentStale = $agentSeen === null || ($now - (int)$agentSeen) > 300;
+        $agentInfo = self::info($agent);
 
-        if ($rec !== null) {
+        $vsCheck = (int)($rec['video_started_utc'] ?? $now);
+        if ($rec !== null && !$agentStale && array_key_exists('recording', $agentInfo) && empty($agentInfo['recording'])
+            && (int)$agentSeen > $vsCheck + 2) {
+            // The PC's latest check-in came after the recording began, yet it says it is not recording.
+            $lamp = 'warn';
+            $head = 'Recording problem';
+            $sub = 'The website shows a recording in progress, but the Windows PC says it is not recording. Check OBS.';
+        } elseif ($rec !== null) {
             $vs = (int)($rec['video_started_utc'] ?? $now);
             $lamp = 'rec';
             $head = 'Recording';
@@ -81,7 +89,6 @@ final class View
             $sub = $next !== null ? 'Next recording ' . fmt_local(Schedule::window($next)[0]) . '.' : 'No upcoming service in the schedule.';
         }
 
-        $agentInfo = self::info($agent);
         $agentText = 'has not checked in yet';
         if ($agent !== null && $agentSeen) {
             $agentText = 'checked in ' . ago((int)$agentSeen);
@@ -94,7 +101,22 @@ final class View
         if ($esp !== null && $esp['last_seen_utc']) {
             $espText = 'reading ' . round((float)($espInfo['lux'] ?? 0)) . ' lux, ' . ago((int)$esp['last_seen_utc']);
         }
-        $rows = self::deviceRow('agent', 'Windows PC', $agent, $agentText)
+        $badges = '';
+        if (!$agentStale) {
+            if (array_key_exists('recording', $agentInfo)) {
+                $badges .= !empty($agentInfo['recording']) ? '<span class="badge rec">Recording</span> ' : '<span class="badge muted">Not recording</span> ';
+            }
+            if (($agentInfo['state'] ?? '') === 'processing') {
+                $badges .= '<span class="badge warn">Processing video</span> ';
+            }
+            if (($agentInfo['obs_ok'] ?? null) === false) {
+                $badges .= '<span class="badge bad">OBS not reachable</span> ';
+            }
+            if (trim((string)($agentInfo['message'] ?? '')) !== '') {
+                $agentText .= '. ' . trim((string)$agentInfo['message']);
+            }
+        }
+        $rows = self::deviceRow('agent', 'Windows PC', $agent, $agentText, $badges)
             . self::deviceRow('esp', 'Pulpit light sensor', $esp, $espText);
 
         return '<section class="status ' . $lamp . '" id="status-card"><div class="lamp" aria-hidden="true"></div>'
@@ -108,7 +130,7 @@ final class View
         return is_array($i) ? $i : [];
     }
 
-    private static function deviceRow(string $key, string $label, ?array $dev, string $text): string
+    private static function deviceRow(string $key, string $label, ?array $dev, string $text, string $badges = ''): string
     {
         $state = $dev['alert_state'] ?? 'ok';
         $extra = '';
@@ -117,7 +139,7 @@ final class View
         } elseif ($state === 'silenced') {
             $extra = '<span class="badge muted">Alerts silenced</span> ' . self::post('/actions/silence', 'Resume alerts', 'btn small', '', ['device' => $key, 'on' => '0']);
         }
-        return '<li><span><strong>' . h($label) . '</strong> ' . h($text) . '</span>' . ($extra !== '' ? '<span class="dev-actions">' . $extra . '</span>' : '') . '</li>';
+        return '<li><span><strong>' . h($label) . '</strong> ' . $badges . h($text) . '</span>' . ($extra !== '' ? '<span class="dev-actions">' . $extra . '</span>' : '') . '</li>';
     }
 
     /** A scaled-down copy of the 1920x1080 intro card, laid out like the ffmpeg render. */

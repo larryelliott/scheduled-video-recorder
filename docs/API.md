@@ -27,7 +27,7 @@ Response:
 {"ok": true, "server_time": 1793000000.25, "retention_days": 14, "pinned": ["keep-me.mp4"],
  "next_service": {"id": 12, "start_utc": 1793028600, "rec_start_utc": 1793028000, "rec_stop_utc": 1793034000,
                   "subtitle": "All Saints Day", "is_test": 0},
- "job": {"service_id": 12, "cut_start_utc": 1793030100, "cut_end_utc": 1793030900, "output_name": "2026-11-01-All-Saints-Day.mp4",
+ "job": {"service_id": 12, "cut_start_utc": 1793030100, "cut_end_utc": 1793030900, "output_name": "All-Saints-Day.mp4",
          "intro": {"duration": 5, "title": "...", "subtitle": "...", "date": "...", "description": "...", "description2": "...",
                    "text1": "...", "text2": "...", "text3": "...", "text4": "...",
                    "background_color": "0x000000", "text_color": "0xFFFFFF", "accent_color": "0x7F0000", "font": "C:/Windows/Fonts/arial.ttf"}}}
@@ -52,7 +52,7 @@ Response:
 `running` updates progress, `failed` notifies, `done` requires the upload to have arrived and marks the video ready.
 A job stuck in `running` for 10 minutes with the agent no longer reporting it is retried, up to 3 attempts.
 
-### `PUT /api/agent/upload?service_id=12&name=2026-11-01-All-Saints-Day.mp4`
+### `PUT /api/agent/upload?service_id=12&name=All-Saints-Day.mp4`
 Raw video bytes as the body (no multipart). The server checks the byte count against `Content-Length`.
 Response: `{"ok": true, "size": 398123456, "file_id": 5}`
 
