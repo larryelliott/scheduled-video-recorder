@@ -1,0 +1,202 @@
+<?php
+/**
+ * Self-test. Uses a throwaway in-memory database, so it is safe to run anywhere:
+ *     php bin/selftest.php
+ * Every line should say PASS. Send any FAIL lines to whoever is helping you.
+ */
+if (PHP_SAPI !== 'cli') {
+    exit("Command line only\n");
+}
+define('APP_DIR', dirname(__DIR__));
+require APP_DIR . '/src/bootstrap.php';
+
+Env::set('APP_TIMEZONE', 'America/Detroit');
+date_default_timezone_set('America/Detroit');
+Env::set('BASE_URL', 'https://example.test/vm');
+Env::set('BASE_PATH', '/vm');
+Env::set('VIDEO_DIR', sys_get_temp_dir() . '/vm-selftest-' . bin2hex(random_bytes(4)));
+Env::set('SHEET_ID', 'testsheet');
+Env::set('INTRO_TITLE', 'Test Church Sermons');
+
+$pass = 0;
+$fail = 0;
+function check(string $name, bool $ok, string $detail = ''): void
+{
+    global $pass, $fail;
+    if ($ok) {
+        $pass++;
+        echo "PASS  $name\n";
+    } else {
+        $fail++;
+        echo "FAIL  $name" . ($detail !== '' ? "  ($detail)" : '') . "\n";
+    }
+}
+function at(string $local): int
+{
+    return (new DateTimeImmutable($local, new DateTimeZone('America/Detroit')))->getTimestamp();
+}
+
+Db::open(':memory:');
+check('schema creates tables', (int)Db::val("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'") >= 10);
+
+// ---- light sensor cut detection against real recorded Sundays -----------------------------------------
+$n = EspLog::import(APP_DIR . '/tests/fixtures/esp-sample.log');
+check('imports sample esp.log', $n === 291, "imported $n");
+$expected = [
+    [1776610800, 1776612285, 1776613046],   // 2026-04-19, light 11:24:45 to 11:37:26
+    [1778425200, 1778426929, 1778427778],   // 2026-05-10
+    [1779030000, 1779031520, 1779032413],   // 2026-05-17
+];
+foreach ($expected as [$start, $a, $b]) {
+    $r = Cuts::detect($start);
+    check('cuts for ' . fmt_local($start, 'Y-m-d'), $r['status'] === 'ok' && $r['start'] === $a && $r['end'] === $b,
+        json_encode($r));
+}
+$base = 1000000;
+$mk = function (array $pairs) use ($base) {
+    return array_map(function ($p) use ($base) {
+        return ['ts_utc' => $base + $p[0], 'lux' => $p[1]];
+    }, $pairs);
+};
+$r = Cuts::analyze($mk([[0, 5], [60, 200], [100, 10], [300, 180], [1000, 8]]));
+check('short light flicker is ignored, real sermon chosen', $r['status'] === 'ok' && $r['start'] === $base + 300 && $r['end'] === $base + 1000, json_encode($r));
+$r = Cuts::analyze($mk([[0, 150], [400, 5], [600, 150], [1500, 5]]));
+check('two plausible cycles: longest wins and a note is added', $r['status'] === 'ok' && $r['end'] === $base + 1500 && strpos($r['note'], '2 light cycles') !== false, json_encode($r));
+$r = Cuts::analyze($mk([[0, 5], [100, 150]]));
+check('light still on is reported as waiting', $r['status'] === 'waiting', json_encode($r));
+$r = Cuts::analyze($mk([[0, 5], [900, 6]]));
+check('no light cycle is reported as none', $r['status'] === 'none', json_encode($r));
+
+// ---- schedule parsing --------------------------------------------------------------------------------
+$csv = "Date,Service Time,Subtitle,Text4,Description,Description2\r\n"
+    . "\"Sunday, November 1, 2026\",10:30 AM,All Saints Day,Fourth line,\"Line one, with a comma\",Line two\r\n"
+    . "\"Sunday, November 8, 2026\",10:30 AM,Twenty-Second Sunday,,,\r\n"
+    . ",,,,,\r\n";
+$rows = Schedule::parse($csv);
+check('parses two service rows', count($rows) === 2, (string)count($rows));
+check('parses the time in the church time zone (DST change day)', $rows[0]['start'] === at('2026-11-01 10:30'), (string)$rows[0]['start']);
+check('keeps commas inside quoted cells', $rows[0]['description'] === 'Line one, with a comma');
+
+Clock::$fixed = at('2026-10-31 12:00');
+Http::$fetcher = function ($method, $url, $body, $headers) use ($csv) {
+    return strpos($url, 'testsheet') !== false ? $csv : null;
+};
+$r = Schedule::refresh();
+check('refresh reads the sheet', $r['ok'] && $r['count'] === 2, json_encode($r));
+$next = Schedule::next();
+check('next service is Nov 1', $next !== null && (int)$next['start_utc'] === at('2026-11-01 10:30'));
+[$wa, $wb] = Schedule::window($next);
+check('recording window is start-10 min to +100 min', $wa === at('2026-11-01 10:20') && $wb === at('2026-11-01 10:20') + 6000);
+check('output name starts with the date', Schedule::outputName($next) === '2026-11-01-All-Saints-Day.mp4', Schedule::outputName($next));
+check('intro carries sheet text and config', Schedule::intro($next)['text4'] === 'Fourth line' && Schedule::intro($next)['title'] === 'Test Church Sermons');
+Services::saveIntro((int)$next['id'], ['subtitle' => 'All Saints Day (edited)']);
+Schedule::refresh();
+check('refresh does not overwrite an edited intro', Services::get((int)$next['id'])['subtitle'] === 'All Saints Day (edited)');
+
+// ---- people, links, notifications ------------------------------------------------------------------------
+$larry = Auth::createUser('Larry', 'admin', 'larry@example.test');
+$pastor = Auth::createUser('Pastor', 'user', 'pastor@example.test');
+$tok = Auth::createLink($larry);
+$u = Auth::redeem($tok);
+check('magic link signs the right person in', $u !== null && $u['name'] === 'Larry');
+check('link url uses BASE_URL', strpos(Auth::linkUrl($tok), 'https://example.test/vm/m/') === 0);
+Auth::revokeLink((int)$u['link_id']);
+check('revoked link stops working', Auth::redeem($tok) === null);
+$sent = [];
+Notify::$transport = function ($ch, $user, $title) use (&$sent) {
+    $sent[] = $user['name'] . '|' . $ch . '|' . $title;
+};
+$titles = function (string $needle) use (&$sent): array {
+    return array_values(array_filter($sent, function ($s) use ($needle) {
+        return strpos($s, $needle) !== false;
+    }));
+};
+
+// ---- a whole service, end to end ---------------------------------------------------------------------------
+Clock::$fixed = at('2026-11-01 10:21');
+$hb = Api::heartbeat(['version' => 't', 'state' => 'armed', 'recording' => false, 'files' => [['name' => 'raw1.mp4', 'kind' => 'raw', 'size' => 5, 'mtime_utc' => Clock::now()]]]);
+check('heartbeat returns the next service', $hb['next_service'] !== null && $hb['next_service']['id'] === (int)$next['id']);
+check('heartbeat stores the PC file list', (int)Db::val('SELECT COUNT(*) FROM agent_files') === 1);
+$sid = (int)$next['id'];
+Api::recording(['service_id' => $sid, 'event' => 'started', 'video_started_utc' => Clock::now(), 'video_file' => 'raw1.mp4']);
+check('Larry is told recording started', count($titles('Larry|email|Recording started')) === 1);
+check('the pastor is not told by default', count($titles('Pastor|')) === 0);
+Services::saveIntro($sid, ['subtitle' => 'x']); // harmless; keeps intro_edited set
+
+Clock::$fixed = at('2026-11-01 10:55');
+Api::esp(['lux' => 150.5, 'duration' => 900000, 'timestamp' => Clock::now(), 'rssi' => -60, 'fw' => '2.0']);
+$hb = Api::heartbeat(['state' => 'recording', 'recording' => true]);
+check('no job while the light is still on', $hb['job'] === null);
+Clock::$fixed = at('2026-11-01 11:08');
+Api::esp(['lux' => 12, 'duration' => 800000, 'timestamp' => Clock::now()]);
+$hb = Api::heartbeat(['state' => 'recording', 'recording' => true]);
+check('a job appears once the light turns off, even while still recording', $hb['job'] !== null
+    && $hb['job']['cut_start_utc'] === at('2026-11-01 10:55') && $hb['job']['cut_end_utc'] === at('2026-11-01 11:08'), json_encode($hb['job']));
+check('job carries the intro and file name', $hb['job']['intro']['title'] === 'Test Church Sermons' && $hb['job']['output_name'] === '2026-11-01-x.mp4', json_encode($hb['job']['output_name'] ?? null));
+
+Api::job(['service_id' => $sid, 'state' => 'running', 'progress' => 40, 'message' => 'trimming']);
+check('job shows as processing', Services::state(Services::get($sid))[0] === 'processing');
+$hb = Api::heartbeat(['state' => 'processing', 'busy_service_id' => $sid]);
+check('a running job is not offered again', $hb['job'] === null);
+Api::recording(['service_id' => $sid, 'event' => 'stopped', 'ts_utc' => Clock::now()]);
+
+$tmp = Files::dir() . '/up.part';
+file_put_contents($tmp, str_repeat('v', 2048));
+$up = Api::finishUpload($sid, '2026-11-01-x.mp4', $tmp, 2048);
+check('upload is stored', !empty($up['ok']) && $up['size'] === 2048, json_encode($up));
+$bad = Files::dir() . '/up2.part';
+file_put_contents($bad, 'abc');
+$up2 = Api::finishUpload($sid, 'bad.mp4', $bad, 999);
+check('truncated upload is rejected', empty($up2['ok']));
+$done = Api::job(['service_id' => $sid, 'state' => 'done']);
+check('job done marks the video ready', !empty($done['ok']) && Services::get($sid)['status'] === 'ready');
+check('Larry is told the video is ready', count($titles('Larry|email|Video ready')) === 1);
+
+// Pastor opts in to two events.
+Db::run('UPDATE users SET prefs = ? WHERE id = ?', [json_encode(['video_ready' => ['email' => true, 'ntfy' => false]]), $pastor]);
+check('pastor preferences are honoured', Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$pastor]))['video_ready']['email'] === true);
+
+// ---- offline alerts ------------------------------------------------------------------------------------------
+Monitor::seen('agent', []);
+Clock::$fixed += 61 * 60;
+$sent = [];
+Monitor::checkDevices();
+check('offline alert fires once the PC is silent for an hour', count($titles('Windows PC has not checked in')) === 1, json_encode($sent));
+Monitor::checkDevices();
+check('and does not repeat', count($titles('Windows PC has not checked in')) === 1);
+check('sensor (2 hour limit) is not flagged yet', count($titles('light sensor')) === 0);
+Monitor::seen('agent', []);
+check('a back-online message follows recovery', count($titles('is back online')) === 1);
+Monitor::setSilenced('agent', true);
+Clock::$fixed += 3 * 3600;
+$sent = [];
+Monitor::checkDevices();
+check('silenced device stays quiet', count($titles('Windows PC')) === 0);
+
+// ---- retention and pins ------------------------------------------------------------------------------------------
+$fileName = Db::val('SELECT name FROM files LIMIT 1');
+check('file is kept before two weeks', Files::cleanup() === []);
+Clock::$fixed += 15 * 86400;
+Files::togglePin((string)$fileName);
+check('pinned file survives cleanup', Files::cleanup() === [] && (int)Db::val('SELECT COUNT(*) FROM files') === 1);
+Files::togglePin((string)$fileName);
+check('expired file is deleted', count(Files::cleanup()) === 1 && (int)Db::val('SELECT COUNT(*) FROM files') === 0);
+
+// ---- controls ------------------------------------------------------------------------------------------------------------
+Clock::$fixed = at('2026-11-02 09:00');
+Schedule::refresh();
+Db::run('UPDATE services SET skip = 0');
+$nx = Schedule::next();
+check('next service is the following Sunday', $nx !== null && (int)$nx['start_utc'] === at('2026-11-08 10:30'));
+Services::setSkip((int)$nx['id'], true);
+check('skipped service is not offered', Schedule::next() === null);
+Services::setSkip((int)$nx['id'], false);
+$s = Services::startNow();
+check('start now creates a manual recording when nothing is near', $s['subtitle'] === 'Manual recording' && (int)$s['rec_start_utc'] === Clock::now());
+check('stop now ends the window', Services::stopNow() && Schedule::window(Services::get((int)$s['id']))[1] === Clock::now());
+$t = Services::createTest();
+$hb = Api::heartbeat([]);
+check('test recording is offered to the PC', $hb['next_service']['id'] === $t && $hb['next_service']['is_test'] === 1);
+
+echo "\n$pass passed, $fail failed\n";
+exit($fail === 0 ? 0 : 1);

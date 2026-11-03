@@ -1,0 +1,15 @@
+# secrets and local data
+.env
+secrets.h
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+server/private/data/*
+!server/private/data/.gitkeep
+# agent runtime
+agent/.venv/
+agent/work/
+agent/agent_state.json
+agent/agent.log*
+__pycache__/
+*.pyc
