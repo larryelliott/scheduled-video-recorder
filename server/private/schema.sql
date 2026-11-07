@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS services (
   ready_utc             INTEGER,
   missed_alerted        INTEGER NOT NULL DEFAULT 0,
   attention_sent        INTEGER NOT NULL DEFAULT 0,
+  auto_light            INTEGER NOT NULL DEFAULT 0, -- 1 = started automatically because the pulpit light came on
   updated_utc           INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_services_status ON services(status);

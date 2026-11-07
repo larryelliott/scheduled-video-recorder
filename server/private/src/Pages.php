@@ -7,6 +7,12 @@ final class Pages
         return $msg === '' ? '' : '<p class="flash ' . h($tone) . '" role="status">' . h($msg) . '</p>';
     }
 
+    private static function sheetLink(string $class = 'btn'): string
+    {
+        $u = Schedule::sheetUrl();
+        return $u === null ? '' : '<a class="' . h($class) . '" href="' . h($u) . '" target="_blank" rel="noopener">Open schedule spreadsheet</a>';
+    }
+
     // ---- sign-in -------------------------------------------------------------------------
 
     public static function login(): string
@@ -73,10 +79,12 @@ final class Pages
                 . View::introPreview($intro)
                 . '<div class="actions"><a class="btn" href="' . h(base_path() . '/services/' . (int)$next['id']) . '">Edit intro and times</a>'
                 . ($next['status'] === 'scheduled' ? View::post('/services/' . (int)$next['id'] . '/skip', 'Skip this service', 'btn', 'Skip recording this service?') : '')
+                . self::sheetLink()
                 . '</div></section>';
         } else {
             $err = Db::setting('schedule_error', '');
-            $body .= '<section class="card"><h2>No upcoming service</h2><p>' . ($err !== '' ? h($err) : 'The schedule has nothing coming up. Add rows to the Google Sheet, then refresh.') . '</p></section>';
+            $body .= '<section class="card"><h2>No upcoming service</h2><p>' . ($err !== '' ? h($err) : 'The schedule has nothing coming up. Add rows to the Google Sheet, then refresh.') . '</p>'
+                . (Schedule::sheetUrl() !== null ? '<div class="actions">' . self::sheetLink() . '</div>' : '') . '</section>';
         }
 
         $body .= '<section class="card"><h2>Controls</h2><div class="actions">'
@@ -120,7 +128,8 @@ final class Pages
         };
         $up = array_map($row, Services::upcoming(8));
         $past = array_map($row, Services::past(20));
-        $body = '<h1>Services</h1><section class="card"><h2>Upcoming</h2><ul class="list">' . ($up ? implode('', $up) : '<li class="muted">Nothing scheduled.</li>') . '</ul></section>'
+        $body = '<h1>Services</h1>' . (Schedule::sheetUrl() !== null ? '<div class="actions">' . self::sheetLink() . '</div>' : '')
+            . '<section class="card"><h2>Upcoming</h2><ul class="list">' . ($up ? implode('', $up) : '<li class="muted">Nothing scheduled.</li>') . '</ul></section>'
             . '<section class="card"><h2>Past</h2><ul class="list">' . ($past ? implode('', $past) : '<li class="muted">Nothing yet.</li>') . '</ul></section>';
         return View::layout('Services', $body, 'services');
     }
@@ -138,8 +147,11 @@ final class Pages
         $b = h(base_path());
         $body = '<p><a href="' . $b . '/services">Back to services</a></p>' . self::flash($msg, $tone)
             . '<h1>' . h(Services::label($s)) . '</h1><p>' . View::badge($state) . ' ' . h(fmt_local((int)$s['start_utc'])) . '</p>'
+            . ((int)$s['auto_light'] === 1 ? '<p class="muted">Started automatically when the pulpit light turned on, because nothing was scheduled.</p>' : '')
             . '<section class="card"><h2>Video</h2>' . self::fileButtons($id)
-            . ($s['job_state'] === 'failed' ? '<p class="flash bad">' . h($s['job_msg']) . '</p>' . View::post("/services/$id/retry", 'Try processing again', 'btn') : '')
+            . ($s['job_state'] === 'failed' ? '<p class="flash bad">' . h($s['job_msg']) . '</p>' . View::post("/services/$id/retry", 'Try processing again', 'btn')
+               : (($s['cut_start_utc'] !== null && in_array($s['status'], ['recorded', 'ready'], true) && !in_array($s['job_state'], ['running', 'pending'], true))
+                   ? View::post("/services/$id/retry", 'Make the video again', 'btn', 'Make the video again with the current intro and sermon times?') : ''))
             . '</section>';
 
         // Intro editor with live preview.
@@ -236,12 +248,12 @@ final class Pages
 
     // ---- settings ------------------------------------------------------------------------
 
-    public static function settings(string $msg = '', string $newLink = ''): string
+    public static function settings(string $msg = '', string $newLink = '', string $tone = 'ok'): string
     {
         $u = Auth::user();
         $prefs = Notify::prefsFor($u);
         $b = h(base_path());
-        $body = '<h1>Settings</h1>' . self::flash($msg);
+        $body = '<h1>Settings</h1>' . self::flash($msg, $tone);
         if ($newLink !== '') {
             $body .= '<section class="card highlight"><h2>New sign-in link</h2><p>Send this to them in a text. It is shown only once.</p>'
                 . '<p class="linkbox" id="newlink">' . h($newLink) . '</p><div class="actions"><button class="btn" data-copy="#newlink">Copy link</button>'
@@ -259,7 +271,9 @@ final class Pages
             . '<label>Phone push topic (ntfy app)<input name="ntfy_topic" value="' . h($u['ntfy_topic']) . '" autocapitalize="off" autocorrect="off" placeholder="a long random word"></label>'
             . '<div class="tablewrap"><table class="prefs"><thead><tr><th></th><th>Email</th><th>Push</th></tr></thead><tbody>' . $rows . '</tbody></table></div>'
             . '<button class="btn primary">Save</button></form>'
-            . '<p class="muted">For push on iPhone, install the free ntfy app, subscribe to the topic above, and keep the topic private.</p></section>';
+            . '<p class="muted">For push on iPhone, install the free ntfy app, subscribe to the topic above, and keep the topic private.</p>'
+            . '<div class="actions">' . View::post('/settings/testmail', 'Send me a test email', 'btn small') . '</div>'
+            . '<p class="muted">Email goes out through ' . h(Mailer::describe()) . '.</p></section>';
 
         if (Auth::isAdmin()) {
             $body .= '<section class="card"><h2>People</h2><ul class="list">';
@@ -277,7 +291,8 @@ final class Pages
                 . '<button class="btn">Add and make a link</button></form></section>';
             $sched = Db::setting('schedule_error', '');
             $ok = (int)Db::setting('schedule_ok_utc', '0');
-            $body .= '<section class="card"><h2>System</h2><p>Schedule last read ' . h($ok ? ago($ok) : 'never') . '.' . ($sched !== '' ? ' <span class="bad-text">' . h($sched) . '</span>' : '') . '</p></section>';
+            $body .= '<section class="card"><h2>System</h2><p>Schedule last read ' . h($ok ? ago($ok) : 'never') . '.' . ($sched !== '' ? ' <span class="bad-text">' . h($sched) . '</span>' : '') . '</p>'
+                . (Db::setting('mail_error', '') !== '' ? '<p>Last email problem: <span class="bad-text">' . h(Db::setting('mail_error', '')) . '</span></p>' : '') . '</section>';
         }
         $body .= '<section class="card">' . View::post('/logout', 'Sign out on this device', 'btn') . '</section>';
         return View::layout('Settings', $body, 'settings');

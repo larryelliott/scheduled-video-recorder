@@ -210,5 +210,56 @@ $t = Services::createTest();
 $hb = Api::heartbeat([]);
 check('test recording is offered to the PC', $hb['next_service']['id'] === $t && $hb['next_service']['is_test'] === 1);
 
+// ---- spreadsheet link ---------------------------------------------------------------------------------------
+check('sheet link is built from SHEET_ID', Schedule::sheetUrl() === 'https://docs.google.com/spreadsheets/d/testsheet/edit#gid=0', (string)Schedule::sheetUrl());
+Env::set('SHEET_ID', '');
+Env::set('SHEET_URL', 'https://docs.google.com/spreadsheets/d/abc123_-X/edit?gid=987#gid=987');
+check('SHEET_URL supplies the sheet id', Schedule::sheetId() === 'abc123_-X', Schedule::sheetId());
+check('SHEET_URL supplies the tab', Schedule::sheetGid() === '987', Schedule::sheetGid());
+check('SHEET_URL is the link shown on the site', Schedule::sheetUrl() === Env::get('SHEET_URL'));
+Env::set('SHEET_URL', '');
+Env::set('SHEET_ID', 'testsheet');
+
+// ---- email --------------------------------------------------------------------------------------------------------
+Env::set('SMTP_HOST', '127.0.0.1');
+Env::set('SMTP_PORT', '1');
+check('an unreachable mail server is reported, not thrown', Mailer::send('a@example.test', 's', 'b') === false && Mailer::$lastError !== '', Mailer::$lastError);
+Env::set('SMTP_HOST', '');
+
+// ---- automatic recording when the light comes on with nothing scheduled --------------------------------------------------
+$autoCount = function (): int {
+    return (int)Db::val('SELECT COUNT(*) FROM services WHERE auto_light = 1');
+};
+Clock::$fixed = at('2026-11-08 09:55'); // the scheduled recording opens in 25 minutes
+Cuts::simulate(false);
+Cuts::simulate(true);
+check('no automatic recording when a scheduled one starts soon', $autoCount() === 0);
+Clock::$fixed = at('2026-11-08 10:25'); // inside the scheduled window
+Cuts::simulate(false);
+Cuts::simulate(true);
+check('no automatic recording while a scheduled recording is open', $autoCount() === 0);
+
+Clock::$fixed = at('2026-11-20 13:59');
+Cuts::simulate(false);
+Clock::$fixed = at('2026-11-20 14:00');
+Cuts::simulate(true);
+$auto = Db::one('SELECT * FROM services WHERE auto_light = 1');
+check('light on with nothing scheduled starts a recording', $auto !== null && (int)$auto['rec_start_utc'] <= Clock::now()
+    && (int)$auto['rec_stop_utc'] === Clock::now() + 1800, json_encode($auto));
+check('the PC is told to record it', Schedule::next() !== null && (int)Schedule::next()['id'] === (int)$auto['id']);
+check('Larry is told it started automatically', count($titles('Recording started automatically')) === 1);
+Clock::$fixed = at('2026-11-20 14:05');
+Cuts::simulate(true);
+check('light staying on does not start a second recording', $autoCount() === 1);
+Clock::$fixed = at('2026-11-20 14:10');
+Cuts::simulate(false);
+check('light going off ends the recording', Schedule::window(Services::get((int)$auto['id']))[1] === Clock::now());
+Env::set('AUTO_LIGHT_RECORD', '0');
+Clock::$fixed = at('2026-11-21 14:00');
+Cuts::simulate(false);
+Cuts::simulate(true);
+check('automatic recording can be switched off', $autoCount() === 1);
+Env::set('AUTO_LIGHT_RECORD', '1');
+
 echo "\n$pass passed, $fail failed\n";
 exit($fail === 0 ? 0 : 1);

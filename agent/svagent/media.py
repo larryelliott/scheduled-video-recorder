@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Optional
 
+from .winproc import hidden_kwargs
+
 log = logging.getLogger("svagent.media")
 Progress = Optional[Callable[[float, str], None]]
 
@@ -23,9 +25,9 @@ class MediaError(RuntimeError):
     pass
 
 
-def _flags() -> int:
-    # Keep ffmpeg from starving OBS while it is still recording.
-    return 0x00004000 if os.name == "nt" else 0  # BELOW_NORMAL_PRIORITY_CLASS
+def _kwargs() -> dict:
+    # No console window, and low priority so ffmpeg never starves OBS while it is still recording.
+    return hidden_kwargs(0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
 
 
 def run(cmd: list[str], cwd: Optional[Path] = None, on_seconds: Optional[Callable[[float], None]] = None) -> None:
@@ -33,7 +35,7 @@ def run(cmd: list[str], cwd: Optional[Path] = None, on_seconds: Optional[Callabl
     log.debug("run: %s", " ".join(cmd))
     errors: list[str] = []
     with subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, creationflags=_flags()) as proc:
+                          text=True, **_kwargs()) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
@@ -51,7 +53,7 @@ def run(cmd: list[str], cwd: Optional[Path] = None, on_seconds: Optional[Callabl
 
 def probe(ffprobe: str, path: str) -> dict:
     out = subprocess.run([ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", path],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, **hidden_kwargs())
     if out.returncode != 0:
         raise MediaError("ffprobe could not read the file: " + out.stderr.strip()[:200])
     data = json.loads(out.stdout)

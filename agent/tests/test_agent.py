@@ -100,6 +100,63 @@ class EndToEnd(unittest.TestCase):
         self.agent.obs.stop()
 
 
+class RecordingPathAndClipping(unittest.TestCase):
+    """The failure seen on a real Sunday: the PC did not know the raw file's path while OBS was still recording."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "up").mkdir()
+        (self.tmp / "rec").mkdir()
+        self.srv = FakeServer(self.tmp / "up").start()
+        self.cfg = Config.load(str(self.tmp / "none.env"), server_url=self.srv.url, agent_token=self.srv.token,
+                               fake_obs=True, record_dir=str(self.tmp / "rec"), output_dir=self.tmp / "out",
+                               work_dir=self.tmp / "work", state_file=self.tmp / "state.json",
+                               log_file=self.tmp / "agent.log", heartbeat_seconds=1.0)
+        self.agent = Agent(self.cfg)
+        # a 45 second raw recording whose name says when it began (like OBS), started 50 s ago
+        self.started = int(time.time()) - 50
+        name = time.strftime("%Y-%m-%d %H-%M-%S.mp4", time.localtime(self.started))
+        self.raw = self.tmp / "rec" / name
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=45",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=45", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", str(self.raw)], check=True)
+
+    def tearDown(self):
+        self.srv.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def job(self, start, end):
+        return {"service_id": 5, "cut_start_utc": start, "cut_end_utc": end, "output_name": "Sermon.mp4",
+                "intro": {"duration": 3, "title": "T", "subtitle": "S", "date": "", "description": "", "description2": "",
+                          "text1": "", "text2": "", "text3": "", "text4": "", "background_color": "0x000000",
+                          "text_color": "0xFFFFFF", "accent_color": "0x7F0000", "font": FONT}}
+
+    def run_job(self, job):
+        self.agent.process_job(job)
+        return [e["state"] for e in self.srv.job_events], [e.get("message") for e in self.srv.job_events if e["state"] == "failed"]
+
+    def test_unknown_path_while_still_recording(self):
+        # segment never learned its path and is still open (stopped_utc None), exactly like the failing Sunday
+        self.agent.state["segments"]["5"] = [{"path": None, "started_utc": self.started, "stopped_utc": None}]
+        states, failed = self.run_job(self.job(self.started + 5, self.started + 15))
+        self.assertIn("done", states, failed)
+        self.assertAlmostEqual(duration(self.srv.uploads[0]), 13.0, delta=1.5)  # 10 s sermon + 3 s intro
+        self.assertEqual(self.agent.state["segments"]["5"][0]["path"], str(self.raw))
+
+    def test_recording_that_began_after_the_light_came_on_is_clipped_not_rejected(self):
+        self.agent.state["segments"]["5"] = [{"path": str(self.raw), "started_utc": self.started, "stopped_utc": None}]
+        states, failed = self.run_job(self.job(self.started - 10, self.started + 20))  # first 10 s were not recorded
+        self.assertIn("done", states, failed)
+        self.assertAlmostEqual(duration(self.srv.uploads[0]), 23.0, delta=1.5)  # 20 s kept + 3 s intro
+
+    def test_message_names_the_recordings_it_has(self):
+        self.agent.state["segments"]["5"] = [{"path": str(self.raw), "started_utc": self.started, "stopped_utc": self.started + 30}]
+        states, failed = self.run_job(self.job(self.started + 3600, self.started + 3700))
+        self.assertIn("failed", states)
+        self.assertIn(" to ", failed[0])
+        self.assertIn("Recordings the PC has for this service", failed[0])
+
+
 class Units(unittest.TestCase):
     def test_cleanup_keeps_new_pinned_and_protected(self):
         tmp = Path(tempfile.mkdtemp())

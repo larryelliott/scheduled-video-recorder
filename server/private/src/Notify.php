@@ -55,9 +55,13 @@ final class Notify
         }
         try {
             if ($channel === 'email') {
-                $from = (string)Env::get('MAIL_FROM', 'noreply@localhost');
-                $headers = "From: Video Manager <$from>\r\nContent-Type: text/plain; charset=UTF-8";
-                return @mail($u['email'], '=?UTF-8?B?' . base64_encode($title) . '?=', $body . "\r\n\r\n" . $url, $headers);
+                $ok = Mailer::send($u['email'], $title, $body . "\r\n\r\n" . $url);
+                // Remember the last problem so Settings can show it instead of failing silently.
+                Db::setSetting('mail_error', $ok ? '' : date('M j g:i A') . ': ' . Mailer::$lastError);
+                if (!$ok) {
+                    error_log('email to ' . $u['email'] . ' failed: ' . Mailer::$lastError);
+                }
+                return $ok;
             }
             $server = rtrim((string)Env::get('NTFY_SERVER', 'https://ntfy.sh'), '/');
             $prio = ($event === 'error' || $event === 'device_offline' || $event === 'needs_attention') ? '4' : '3';

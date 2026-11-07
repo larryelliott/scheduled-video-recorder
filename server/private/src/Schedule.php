@@ -68,17 +68,48 @@ final class Schedule
         return ($slug !== '' ? $slug : 'untitled') . '.mp4';
     }
 
+    /** The sheet's id: SHEET_ID, or taken from a pasted SHEET_URL (https://docs.google.com/spreadsheets/d/<id>/edit...). */
+    public static function sheetId(): string
+    {
+        $id = trim((string)Env::get('SHEET_ID', ''));
+        if ($id !== '') {
+            return $id;
+        }
+        return preg_match('#/spreadsheets/d/([A-Za-z0-9_-]+)#', (string)Env::get('SHEET_URL', ''), $m) ? $m[1] : '';
+    }
+
+    /** The tab: SHEET_GID, else the gid in SHEET_URL, else 0 (the first tab). */
+    public static function sheetGid(): string
+    {
+        $g = trim((string)Env::get('SHEET_GID', ''));
+        if ($g !== '') {
+            return $g;
+        }
+        return preg_match('/[#&?]gid=(\d+)/', (string)Env::get('SHEET_URL', ''), $m) ? $m[1] : '0';
+    }
+
+    /** Link for people to open the spreadsheet (shown on the website). SHEET_URL wins; otherwise built from SHEET_ID. */
+    public static function sheetUrl(): ?string
+    {
+        $u = trim((string)Env::get('SHEET_URL', ''));
+        if ($u !== '') {
+            return $u;
+        }
+        $id = self::sheetId();
+        return $id === '' ? null : 'https://docs.google.com/spreadsheets/d/' . rawurlencode($id) . '/edit#gid=' . rawurlencode(self::sheetGid());
+    }
+
     public static function fetch(): ?string
     {
         $url = Env::get('SHEET_CSV_URL');
         if (!$url) {
-            $id = Env::get('SHEET_ID');
-            if (!$id) {
-                self::$lastError = 'SHEET_ID is not set in .env';
+            $id = self::sheetId();
+            if ($id === '') {
+                self::$lastError = 'Set SHEET_URL (or SHEET_ID) in .env';
                 return null;
             }
             $url = 'https://docs.google.com/spreadsheets/d/' . rawurlencode($id)
-                . '/export?format=csv&gid=' . rawurlencode((string)Env::get('SHEET_GID', '0'));
+                . '/export?format=csv&gid=' . rawurlencode(self::sheetGid());
         }
         $body = Http::request('GET', $url, null, [], 12);
         if ($body === null || trim($body) === '') {

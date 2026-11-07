@@ -8,12 +8,46 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .winproc import hidden_kwargs
+
 log = logging.getLogger("svagent.obs")
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".flv", ".ts")
 
 
 class ObsError(RuntimeError):
     pass
+
+
+def parse_obs_name(name: str) -> Optional[float]:
+    """OBS names files like '2026-11-02 21-15-51.mp4' (local time). Returns the local epoch, or None."""
+    try:
+        return time.mktime(time.strptime(Path(name).stem, "%Y-%m-%d %H-%M-%S"))
+    except ValueError:
+        return None
+
+
+def default_videos_dir() -> str:
+    """OBS saves to the user's Videos folder unless told otherwise."""
+    p = Path.home() / "Videos"
+    return str(p) if p.is_dir() else ""
+
+
+def video_near(directory: str, started_local: float, window: float = 180) -> Optional[str]:
+    """The recording file whose start time (from its OBS-style name, else creation time) is closest to started_local."""
+    best, best_diff = None, window + 1
+    try:
+        for e in os.scandir(directory):
+            if not (e.is_file() and e.name.lower().endswith(VIDEO_EXT)):
+                continue
+            t = parse_obs_name(e.name)
+            if t is None:
+                t = e.stat().st_ctime
+            diff = abs(t - started_local)
+            if diff < best_diff:
+                best, best_diff = e.path, diff
+    except OSError:
+        return None
+    return best if best_diff <= window else None
 
 
 def newest_video(directory: str, since: float) -> Optional[str]:
@@ -39,13 +73,16 @@ class RealObs:
     def _running(self) -> bool:
         try:
             if os.name == "nt":
-                out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq obs64.exe"], capture_output=True, text=True, timeout=15).stdout
+                out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq obs64.exe"], capture_output=True, text=True,
+                                     timeout=15, **hidden_kwargs()).stdout
                 return "obs64.exe" in out.lower()
             return subprocess.run(["pgrep", "-x", "obs"], capture_output=True, timeout=10).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
     def ensure_running(self) -> None:
+        if self.client is not None:  # already connected, so OBS is obviously running (and no tasklist call needed)
+            return
         if self._running() or not self.cfg.obs_exe or not os.path.isfile(self.cfg.obs_exe):
             return
         log.info("OBS is not running; starting it")
@@ -96,7 +133,8 @@ class RealObs:
     def record_dir(self) -> Optional[str]:
         try:
             return getattr(self._call("get_record_directory"), "record_directory", None)
-        except Exception:
+        except Exception as exc:
+            log.warning("Could not ask OBS for its recording folder: %s", exc)
             return None
 
     def start(self) -> None:
@@ -108,13 +146,16 @@ class RealObs:
 
     def wait_for_file(self, since_local: float, timeout: float = 20) -> Optional[str]:
         """After start(), find the file OBS is writing."""
-        directory = self.cfg.record_dir or self.record_dir()
+        directory = self.cfg.record_dir or self.record_dir() or default_videos_dir()
         deadline = time.time() + timeout
         while directory and time.time() < deadline:
             found = newest_video(directory, since_local - 2)
             if found:
                 return found
             time.sleep(1)
+        if directory:
+            return video_near(directory, since_local, 120)
+        log.warning("Cannot tell where OBS saves recordings. Set RECORD_DIR in .env.")
         return None
 
 

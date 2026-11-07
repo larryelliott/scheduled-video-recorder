@@ -22,10 +22,16 @@ final class Api
         // Trust the sensor's NTP clock only when it agrees with ours within 10 minutes.
         $ts = ($dev > 1600000000 && abs($dev - $now) <= 600) ? $dev : $now;
         $lux = (float)($b['lux'] ?? 0);
+        $prev = Db::val('SELECT lux FROM light_events ORDER BY ts_utc DESC, id DESC LIMIT 1');
         Db::run('INSERT INTO light_events (ts_utc, lux, duration, received_utc, rssi, fw) VALUES (?, ?, ?, ?, ?, ?)',
             [$ts, $lux, (int)($b['duration'] ?? 0), $now, isset($b['rssi']) ? (int)$b['rssi'] : null,
              substr((string)($b['fw'] ?? ''), 0, 20)]);
         Monitor::seen('esp', ['lux' => $lux, 'rssi' => $b['rssi'] ?? null, 'fw' => $b['fw'] ?? '', 'uptime' => $b['uptime'] ?? null]);
+        try {
+            Services::lightChanged($lux, $prev === null ? null : (float)$prev, $ts);
+        } catch (Throwable $e) {
+            error_log('lightChanged failed: ' . $e->getMessage()); // never let this break the sensor's reply
+        }
         return ['ok' => true, 'server_time' => $now];
     }
 

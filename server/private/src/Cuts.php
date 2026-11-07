@@ -96,8 +96,11 @@ final class Cuts
     public static function simulate(bool $on): void
     {
         $now = Clock::now();
+        $lux = $on ? 150.0 : 5.0;
+        $prev = Db::val('SELECT lux FROM light_events ORDER BY ts_utc DESC, id DESC LIMIT 1');
         Db::run('INSERT INTO light_events (ts_utc, lux, duration, received_utc, rssi, fw) VALUES (?, ?, ?, ?, ?, ?)',
-            [$now, $on ? 150.0 : 5.0, 0, $now, null, 'manual']);
+            [$now, $lux, 0, $now, null, 'manual']);
+        Services::lightChanged($lux, $prev === null ? null : (float)$prev, $now);
         self::refreshActive();
     }
 

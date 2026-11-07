@@ -10,7 +10,7 @@ from typing import Optional
 
 from . import __version__, cleanup, media
 from .api import Server
-from .obs import make_obs, newest_video
+from .obs import default_videos_dir, make_obs, newest_video, parse_obs_name, video_near
 from .state import State
 
 log = logging.getLogger("svagent")
@@ -40,7 +40,7 @@ class Agent:
 
     # ------------------------------------------------------------------ helpers
     def record_dir(self) -> str:
-        return self.cfg.record_dir or self.state.get("record_dir") or ""
+        return self.cfg.record_dir or self.state.get("record_dir") or default_videos_dir()
 
     def dirs(self) -> list[tuple[str, str]]:
         return [(self.record_dir(), "raw"), (str(self.cfg.output_dir), "final")]
@@ -165,7 +165,10 @@ class Agent:
             started = self.server.now()
         directory = self.record_dir()
         path = newest_video(directory, time.time() - 6 * 3600) if directory else None
-        log.info("Adopting a recording that was already running")
+        named = parse_obs_name(Path(path).name) if path else None
+        if named is not None:  # the file name carries the exact start second
+            started = named + self.server.offset
+        log.info("Adopting a recording that was already running: %s", path)
         self._begin_segment(sid, path, started)
 
     def _begin_segment(self, sid: int, path: Optional[str], started: float) -> None:
@@ -195,13 +198,47 @@ class Agent:
 
     # ------------------------------------------------------------------ processing
     def find_segment(self, sid: int, cut_start: float, cut_end: float) -> Optional[dict]:
-        for seg in reversed(self._segments(sid)):
-            if not seg.get("path"):
-                continue
+        """The recording that overlaps the sermon the most. A recording that began a little after the light came on
+        (or ended a little before it went off) is still used; the video is simply clipped to what was recorded."""
+        need = min(60.0, (cut_end - cut_start) * 0.5)
+        best, best_overlap = None, 0.0
+        for seg in self._segments(sid):
             ends = seg.get("stopped_utc")
-            if seg["started_utc"] <= cut_start + 5 and (ends is None or ends >= cut_end - 5):
-                return seg
-        return None
+            end = max(cut_end, self.server.now()) if ends is None else ends
+            overlap = min(cut_end, end) - max(cut_start, seg["started_utc"])
+            if overlap > need and overlap > best_overlap:
+                best, best_overlap = seg, overlap
+        return best
+
+    def resolve_path(self, seg: dict) -> Optional[str]:
+        """Finds the raw file for a segment. The path is not always known while OBS is still writing it."""
+        p = seg.get("path")
+        if p and Path(p).is_file():
+            return p
+        directory = self.record_dir()
+        if not directory:
+            return None
+        found = video_near(directory, seg["started_utc"] - self.server.offset)
+        if found:
+            seg["path"] = found
+            self.state.save()
+            log.info("Found the recording file: %s", found)
+        return found
+
+    def refresh_paths(self) -> None:
+        for segs in self.state["segments"].values():
+            for seg in segs:
+                if (not seg.get("path") or not Path(seg["path"]).is_file()) and time.time() - seg["started_utc"] < 3 * 86400:
+                    self.resolve_path(seg)
+
+    def explain_no_segment(self, sid: int, cut_start: float, cut_end: float) -> str:
+        def t(x: float) -> str:
+            return time.strftime("%H:%M:%S", time.localtime(x))
+        have = "; ".join(f"{t(s['started_utc'])} to {t(s['stopped_utc']) if s.get('stopped_utc') else 'still recording'}"
+                         for s in self._segments(sid)) or "none"
+        return (f"No recording on the Windows PC covers the sermon times ({t(cut_start)} to {t(cut_end)}). "
+                f"Recordings the PC has for this service: {have}. If the recording was started late or stopped early, "
+                "set the start and end by hand on the service page.")
 
     def maybe_start_job(self, job: Optional[dict]) -> None:
         if not job or (self.job_thread and self.job_thread.is_alive()):
@@ -226,17 +263,21 @@ class Agent:
             cut_start, cut_end = float(job["cut_start_utc"]), float(job["cut_end_utc"])
             seg = self.find_segment(sid, cut_start, cut_end)
             if seg is None:
-                raise JobError("No recording on the Windows PC covers the sermon times. If the recording was started late or "
-                               "stopped early, set the start and end by hand on the service page.")
-            if not Path(seg["path"]).is_file():
-                raise JobError(f"The raw recording is missing from the PC: {seg['path']}")
+                raise JobError(self.explain_no_segment(sid, cut_start, cut_end))
+            path = self.resolve_path(seg)
+            if not path or not Path(path).is_file():
+                raise JobError(f"The raw recording file could not be found (looked in {self.record_dir() or 'no folder'}). "
+                               "Set RECORD_DIR in the agent .env to the folder OBS records to.")
             self.send_job(sid, "running", "waiting for the recording to catch up", 0)
             while seg.get("stopped_utc") is None and self.server.now() < cut_end + 15 and not self.stop_event.is_set():
                 time.sleep(3)
-            start_offset = max(0.0, cut_start - seg["started_utc"])
-            duration = cut_end - cut_start - max(0.0, seg["started_utc"] - cut_start)
+            start = max(cut_start, seg["started_utc"])
+            end = cut_end if seg.get("stopped_utc") is None else min(cut_end, seg["stopped_utc"])
+            start_offset, duration = start - seg["started_utc"], end - start
+            if start - cut_start > 1:
+                log.warning("Recording began %.0fs after the sermon started; clipping", start - cut_start)
             out = self.cfg.output_dir / job["output_name"]
-            media.build_video(self.cfg.ffmpeg, self.cfg.ffprobe, seg["path"], start_offset, duration, job["intro"], out, work,
+            media.build_video(self.cfg.ffmpeg, self.cfg.ffprobe, path, start_offset, duration, job["intro"], out, work,
                               lambda f, m: report(5 + f * 70, m))
             if self.cfg.upload_after_trim:
                 self.send_job(sid, "running", "uploading to the web server", 80)
@@ -291,6 +332,7 @@ class Agent:
             job = None
             self.last_message = f"Server unreachable: {self.server.last_error}"
         self.control_recording(nxt, self.server.now())
+        self.refresh_paths()
         self.maybe_start_job(job)
         self.maybe_cleanup()
 

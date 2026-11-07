@@ -193,6 +193,54 @@ final class Services
         return ['ok' => true];
     }
 
+    // ---- automatic recording from the pulpit light ----------------------------------------
+
+    /**
+     * Called after every light reading. When the light turns on and nothing is scheduled, a recording is started
+     * automatically; it ends when the light goes off, or after AUTO_LIGHT_MAX_MINUTES, whichever comes first.
+     * @param float|null $prevLux the reading before this one (null if there was none)
+     */
+    public static function lightChanged(float $lux, ?float $prevLux, int $ts): void
+    {
+        if (Env::get('AUTO_LIGHT_RECORD', '1') === '0') {
+            return;
+        }
+        $now = Clock::now();
+        $hi = (float)Env::get('CUT_LUX_ON', '100');
+        $lo = (float)Env::get('CUT_LUX_OFF', '50');
+
+        if ($lux < $lo) { // light off: end a light-triggered recording that is still open
+            Db::run('UPDATE services SET rec_stop_utc = ?, updated_utc = ? WHERE auto_light = 1 AND rec_stop_utc > ?', [$now, $now, $now]);
+            return;
+        }
+        if ($lux <= $hi || $prevLux === null || $prevLux > $hi) {
+            return; // not bright, or the light was already on: only the moment it turns on counts
+        }
+
+        $max = max(1, Env::int('AUTO_LIGHT_MAX_MINUTES', 30)) * 60;
+        foreach (Db::all('SELECT * FROM services WHERE start_utc > ? AND start_utc < ?', [$now - 86400, $now + 86400]) as $r) {
+            [$a, $b] = Schedule::window($r);
+            if ($a <= $now && $now < $b) {
+                return; // a recording is already scheduled (or deliberately skipped) right now
+            }
+            if ((int)$r['skip'] === 0 && $a > $now && $a - $now <= $max) {
+                return; // a scheduled recording starts within the next stretch anyway
+            }
+        }
+
+        $start = min($ts, $now);
+        while (Db::val('SELECT 1 FROM services WHERE start_utc = ?', [$start]) !== null) {
+            $start++;
+        }
+        Db::run("INSERT INTO services (start_utc, subtitle, is_sheet, intro_edited, auto_light, rec_start_utc, rec_stop_utc, updated_utc)
+                 VALUES (?, ?, 0, 1, 1, ?, ?, ?)",
+            [$start, 'Sermon ' . fmt_local($start, 'Y-m-d'), $start, $now + $max, $now]);
+        $id = Db::id();
+        Notify::send('needs_attention', 'Recording started automatically',
+            'The pulpit light turned on and nothing was scheduled, so a recording was started. It stops when the light goes off or after '
+            . intdiv($max, 60) . ' minutes. Open the service to edit the intro.', '/services/' . $id);
+    }
+
     // ---- actions from the web interface -------------------------------------------------
 
     /** Start recording now: uses today's service if one starts within 4 hours, else makes a manual one. */

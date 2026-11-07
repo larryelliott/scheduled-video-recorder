@@ -109,7 +109,7 @@ final class App
         } elseif ($path === '/files') {
             self::html(Pages::files((string)($_GET['m'] ?? '')));
         } elseif ($path === '/settings') {
-            self::html(Pages::settings((string)($_GET['m'] ?? '')));
+            self::html(Pages::settings((string)($_GET['m'] ?? ''), '', (string)($_GET['t'] ?? 'ok')));
         } elseif (preg_match('#^/download/(\d+)$#', $path, $m)) {
             $f = Db::one('SELECT * FROM files WHERE id = ?', [(int)$m[1]]);
             if ($f === null) {
@@ -211,6 +211,14 @@ final class App
         if ($path === '/files/delete' && $admin) {
             Files::delete((int)($_POST['id'] ?? 0));
             self::back('/files', 'Deleted.');
+        }
+        if ($path === '/settings/testmail') {
+            if (trim((string)$u['email']) === '') {
+                self::back('/settings', 'Add your email address below first, save, then try again.', 'bad');
+            }
+            $ok = Mailer::send($u['email'], 'Test email from the video manager', 'If you can read this, email notifications are working.');
+            Db::setSetting('mail_error', $ok ? '' : date('M j g:i A') . ': ' . Mailer::$lastError);
+            self::back('/settings', $ok ? 'Test email sent to ' . $u['email'] . '. If it does not arrive in a minute, check spam.' : 'Email failed: ' . Mailer::$lastError, $ok ? 'ok' : 'bad');
         }
         if ($path === '/settings/me') {
             $prefs = [];

@@ -2,7 +2,7 @@
 /** SQLite access (PDO). Integers are bound as integers so SQL comparisons behave. */
 final class Db
 {
-    public const SCHEMA_VERSION = 1;
+    public const SCHEMA_VERSION = 2;
     private static ?PDO $pdo = null;
 
     public static function open(string $path): PDO
@@ -40,6 +40,11 @@ final class Db
             return;
         }
         $pdo->exec((string)file_get_contents(APP_DIR . '/schema.sql'));
+        // Version 2 added services.auto_light. Databases created earlier do not have it yet.
+        $cols = array_column($pdo->query('PRAGMA table_info(services)')->fetchAll(), 'name');
+        if (!in_array('auto_light', $cols, true)) {
+            $pdo->exec('ALTER TABLE services ADD COLUMN auto_light INTEGER NOT NULL DEFAULT 0');
+        }
         $pdo->exec('PRAGMA user_version = ' . self::SCHEMA_VERSION);
     }
 
