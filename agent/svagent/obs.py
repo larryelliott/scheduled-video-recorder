@@ -239,8 +239,8 @@ class FakeObs:
         Path(self.cfg.record_dir).mkdir(parents=True, exist_ok=True)
         self.path = str(Path(self.cfg.record_dir) / time.strftime("%Y-%m-%d %H-%M-%S.mp4"))
         cmd = [self.cfg.ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-               "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
-               "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+               "-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30",
+               "-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
                # fragmented MP4 stays readable while it grows, like OBS "Hybrid MP4"
                "-movflags", "+frag_keyframe+empty_moov+default_base_moof", self.path]

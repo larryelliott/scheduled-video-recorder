@@ -100,6 +100,9 @@ final class YouTubePublisher
                 error_log('YouTube upload succeeded but its publication state was not saved.');
                 return ['ok' => false, 'tone' => 'warn', 'message' => 'YouTube may have accepted the video, but the result was not saved. Check YouTube before taking further action.'];
             }
+            $link = $videoId !== '' ? ' https://youtu.be/' . rawurlencode($videoId) : '';
+            Notify::send('youtube_published', 'YouTube video published', Services::label($service) . ' was published to YouTube.' . $link,
+                '/services/' . $serviceId, NotificationImages::url($serviceId, 'youtube_published'));
             return ['ok' => true, 'tone' => 'ok', 'message' => 'Video published to YouTube.'];
         }
         $failed = ($result['ok'] ?? null) === false || ($result['success'] ?? null) === false

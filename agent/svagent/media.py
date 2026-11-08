@@ -84,6 +84,21 @@ def probe(ffprobe: str, path: str) -> dict:
     }
 
 
+def capture_frame(ffmpeg: str, src: str, out_path: Path, seconds: float = 0.5) -> bytes:
+    """Extracts a small JPEG preview from a recording or rendered intro."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, seconds):.3f}",
+         "-i", src, "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "6", str(out_path)],
+        capture_output=True, text=True, timeout=20, **hidden_kwargs())
+    if result.returncode != 0 or not out_path.is_file():
+        raise MediaError("Could not capture video preview: " + result.stderr.strip()[:200])
+    image = out_path.read_bytes()
+    if not image.startswith(b"\xff\xd8\xff") or len(image) > 300_000:
+        raise MediaError("Captured preview is not a valid small JPEG")
+    return image
+
+
 def _font(path: str) -> str:
     # Inside a drawtext option the drive colon must be escaped: C\:/Windows/Fonts/arial.ttf
     return path.replace("\\", "/").replace(":", "\\:")

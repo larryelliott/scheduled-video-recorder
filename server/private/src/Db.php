@@ -2,7 +2,7 @@
 /** SQLite access (PDO). Integers are bound as integers so SQL comparisons behave. */
 final class Db
 {
-    public const SCHEMA_VERSION = 3;
+    public const SCHEMA_VERSION = 4;
     private static ?PDO $pdo = null;
 
     public static function open(string $path): PDO
@@ -38,6 +38,7 @@ final class Db
         $ver = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
         if ($ver >= self::SCHEMA_VERSION) {
             self::ensureYouTubeSchema($pdo);
+            self::ensureNotificationImageSchema($pdo);
             return;
         }
         $pdo->exec((string)file_get_contents(APP_DIR . '/schema.sql'));
@@ -48,6 +49,7 @@ final class Db
             }
         }
         self::ensureYouTubeSchema($pdo);
+        self::ensureNotificationImageSchema($pdo);
         $pdo->exec('PRAGMA user_version = ' . self::SCHEMA_VERSION);
     }
 
@@ -68,6 +70,18 @@ final class Db
             youtube_video_id TEXT,
             error TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (service_id, file_name)
+        )");
+    }
+
+    private static function ensureNotificationImageSchema(PDO $pdo): void
+    {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS notification_images (
+            service_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            image_data TEXT NOT NULL,
+            public_token TEXT NOT NULL UNIQUE,
+            created_utc INTEGER NOT NULL,
+            PRIMARY KEY (service_id, kind)
         )");
     }
 

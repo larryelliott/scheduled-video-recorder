@@ -61,6 +61,8 @@ $v3Files = array_column($markedV3->query('PRAGMA table_info(files)')->fetchAll(P
 check('version 3 migration repairs a missing YouTube publication table',
     in_array('public_token', $v3Files, true)
     && $markedV3->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'youtube_publications'")->fetchColumn() !== false);
+check('version 3 migration creates notification image storage',
+    $markedV3->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notification_images'")->fetchColumn() !== false);
 
 // ---- light sensor cut detection against real recorded Sundays -----------------------------------------
 $n = EspLog::import(APP_DIR . '/tests/fixtures/esp-sample.log');
@@ -119,6 +121,9 @@ check('refresh does not overwrite an edited intro', Services::get((int)$next['id
 // ---- people, links, notifications ------------------------------------------------------------------------
 $larry = Auth::createUser('Larry', 'admin', 'larry@example.test');
 $pastor = Auth::createUser('Pastor', 'user', 'pastor@example.test');
+check('new notification events default on for admins and off for users',
+    Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$larry]))['youtube_published']['email']
+    && !Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$pastor]))['pulpit_light_on']['email']);
 $sessionToken = Auth::token();
 $sessionCsrf = Auth::token();
 Db::run('INSERT INTO sessions (user_id, token_hash, csrf, created_utc, last_seen_utc, expires_utc) VALUES (?, ?, ?, ?, ?, ?)',
@@ -131,8 +136,12 @@ check('link url uses BASE_URL', strpos(Auth::linkUrl($tok), 'https://example.tes
 Auth::revokeLink((int)$u['link_id']);
 check('revoked link stops working', Auth::redeem($tok) === null);
 $sent = [];
-Notify::$transport = function ($ch, $user, $title) use (&$sent) {
+$imageCalls = [];
+Notify::$transport = function ($ch, $user, $title, $body, $url, $imageUrl = null) use (&$sent, &$imageCalls) {
     $sent[] = $user['name'] . '|' . $ch . '|' . $title;
+    if ($imageUrl !== null) {
+        $imageCalls[] = $title . '|' . $imageUrl;
+    }
 };
 $titles = function (string $needle) use (&$sent): array {
     return array_values(array_filter($sent, function ($s) use ($needle) {
@@ -146,13 +155,26 @@ $hb = Api::heartbeat(['version' => 't', 'state' => 'armed', 'recording' => false
 check('heartbeat returns the next service', $hb['next_service'] !== null && $hb['next_service']['id'] === (int)$next['id']);
 check('heartbeat stores the PC file list', (int)Db::val('SELECT COUNT(*) FROM agent_files') === 1);
 $sid = (int)$next['id'];
-Api::recording(['service_id' => $sid, 'event' => 'started', 'video_started_utc' => Clock::now(), 'video_file' => 'raw1.mp4']);
+Api::recording(['service_id' => $sid, 'event' => 'started', 'video_started_utc' => Clock::now(), 'video_file' => 'raw1.mp4',
+    'recording_image' => base64_encode("\xFF\xD8\xFF\xD9")]);
 check('Larry is told recording started', count($titles('Larry|email|Recording started')) === 1);
+preg_match('#/notification-image/' . $sid . '/recording_started/([A-Za-z0-9_-]{43})$#',
+    $imageCalls[0] ?? '', $recordingImageToken);
+check('recording notification includes a token-protected frame',
+    isset($recordingImageToken[1])
+    && NotificationImages::read($sid, 'recording_started', $recordingImageToken[1]) === "\xFF\xD8\xFF\xD9"
+    && NotificationImages::read($sid, 'recording_started', str_repeat('x', 43)) === null);
 check('the pastor is not told by default', count($titles('Pastor|')) === 0);
 Services::saveIntro($sid, ['subtitle' => 'x']); // harmless; keeps intro_edited set
 
 Clock::$fixed = at('2026-11-01 10:55');
 Api::esp(['lux' => 150.5, 'duration' => 900000, 'timestamp' => Clock::now(), 'rssi' => -60, 'fw' => '2.0']);
+check('pulpit light-on notification fires once at the rising threshold',
+    count($titles('Larry|email|Pulpit light turned on')) === 1);
+$lightCount = count($titles('Larry|email|Pulpit light turned on'));
+Api::esp(['lux' => 151, 'duration' => 900000, 'timestamp' => Clock::now()]);
+check('pulpit light-on notification does not repeat while the light stays on',
+    count($titles('Larry|email|Pulpit light turned on')) === $lightCount);
 $hb = Api::heartbeat(['state' => 'recording', 'recording' => true]);
 check('no job while the light is still on', $hb['job'] === null);
 Clock::$fixed = at('2026-11-01 11:08');
@@ -167,6 +189,9 @@ check('a job appears once the light turns off, even while still recording', $hb[
 check('job carries the intro and file name', $hb['job']['intro']['title'] === 'Test Church Sermons' && $hb['job']['output_name'] === 'x.mp4', json_encode($hb['job']['output_name'] ?? null));
 
 Api::job(['service_id' => $sid, 'state' => 'running', 'progress' => 40, 'message' => 'trimming']);
+Api::job(['service_id' => $sid, 'state' => 'running', 'progress' => 40, 'message' => 'joining']);
+check('processing-started notification fires once per job attempt',
+    count($titles('Larry|email|Video processing started')) === 1);
 check('job shows as processing', Services::state(Services::get($sid))[0] === 'processing');
 $live = Pages::serviceLive($sid);
 check('service page live parts are produced', $live !== null && isset($live['head'], $live['video'], $live['cut'], $live['rec']));
@@ -184,13 +209,32 @@ $bad = Files::dir() . '/up2.part';
 file_put_contents($bad, 'abc');
 $up2 = Api::finishUpload($sid, 'bad.mp4', $bad, 999);
 check('truncated upload is rejected', empty($up2['ok']));
-$done = Api::job(['service_id' => $sid, 'state' => 'done']);
+Env::set('GOOGLE_APPS_SCRIPT_URL', 'https://script.google.com/macros/s/test/exec');
+Env::set('YOUTUBE_PLAYLIST_ID', 'playlist-test');
+$automaticPublishRequests = 0;
+Http::$fetcher = function () use (&$automaticPublishRequests) {
+    $automaticPublishRequests++;
+    return '{"status":"success","videoId":"yt-auto-123"}';
+};
+$done = Api::job(['service_id' => $sid, 'state' => 'done', 'intro_image' => base64_encode("\xFF\xD8\xFF\xD9")]);
 check('job done marks the video ready', !empty($done['ok']) && Services::get($sid)['status'] === 'ready');
 check('Larry is told the video is ready', count($titles('Larry|email|Video ready')) === 1);
+preg_match('#/notification-image/' . $sid . '/youtube_published/([A-Za-z0-9_-]{43})$#',
+    implode('|', $imageCalls), $introImageToken);
+check('YouTube notification includes the intro frame',
+    isset($introImageToken[1]) && NotificationImages::read($sid, 'youtube_published', $introImageToken[1]) === "\xFF\xD8\xFF\xD9");
+check('completed non-test video is automatically published exactly once',
+    $automaticPublishRequests === 1 && YouTubePublisher::status((int)$up['file_id'])['state'] === 'published'
+    && count($titles('Larry|email|YouTube video published')) === 1);
+Api::job(['service_id' => $sid, 'state' => 'done']);
+check('repeated job completion does not republish or resend completion notifications',
+    $automaticPublishRequests === 1 && count($titles('Larry|email|Video ready')) === 1
+    && count($titles('Larry|email|YouTube video published')) === 1);
 
 // Pastor opts in to two events.
 Db::run('UPDATE users SET prefs = ? WHERE id = ?', [json_encode(['video_ready' => ['email' => true, 'ntfy' => false]]), $pastor]);
-check('pastor preferences are honoured', Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$pastor]))['video_ready']['email'] === true);
+check('pastor preferences are honoured', Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$pastor]))['video_ready']['email'] === true
+    && !Notify::prefsFor(Db::one('SELECT * FROM users WHERE id = ?', [$pastor]))['youtube_published']['email']);
 
 // ---- offline alerts ------------------------------------------------------------------------------------------
 Monitor::seen('agent', []);

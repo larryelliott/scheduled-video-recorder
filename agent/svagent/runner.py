@@ -1,6 +1,7 @@
 """The agent loop: check in, follow the schedule, record, trim, upload, clean up."""
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import shutil
@@ -67,8 +68,8 @@ class Agent:
             self.state["outbox"].append(["recording", payload])
             self.state.save()
 
-    def send_job(self, sid: int, state: str, message: str = "", progress: int = 0) -> None:
-        payload = {"service_id": sid, "state": state, "message": message, "progress": int(progress)}
+    def send_job(self, sid: int, state: str, message: str = "", progress: int = 0, **extra) -> None:
+        payload = {"service_id": sid, "state": state, "message": message, "progress": int(progress), **extra}
         if not self.server.job(payload):
             if state != "running":  # progress updates are not worth queueing
                 self.state["outbox"].append(["job", payload])
@@ -197,7 +198,34 @@ class Agent:
         self.state.save()
         self.last_message = ""
         log.info("Recording started for service %s -> %s", sid, path)
-        self.send_event(sid, "started", video_started_utc=int(started), video_file=Path(path).name if path else "")
+        recording_image = None
+        if path:
+            preview = self.cfg.work_dir / f"{sid}-recording-preview.jpg"
+            deadline = time.monotonic() + 10
+            last_preview_error = ""
+            try:
+                while time.monotonic() < deadline:
+                    wait = 3.0 - (self.server.now() - started)
+                    if wait > 0:
+                        time.sleep(min(wait, 0.5))
+                        continue
+                    if Path(path).is_file() and Path(path).stat().st_size > 0:
+                        try:
+                            image = media.capture_frame(self.cfg.ffmpeg, path, preview, seconds=2.0)
+                            recording_image = base64.b64encode(image).decode("ascii")
+                            break
+                        except Exception as exc:
+                            last_preview_error = str(exc)
+                    time.sleep(0.5)
+                if not recording_image:
+                    log.warning("Could not capture recording-start preview: %s",
+                                last_preview_error or "recording file was not readable in time")
+            finally:
+                preview.unlink(missing_ok=True)
+        extra = {"video_started_utc": int(started), "video_file": Path(path).name if path else ""}
+        if recording_image:
+            extra["recording_image"] = recording_image
+        self.send_event(sid, "started", **extra)
 
     def stop_recording(self, sid: int) -> None:
         try:
@@ -303,11 +331,19 @@ class Agent:
                     "extra": self.cfg.video_encoder_args}
             media.build_video(self.cfg.ffmpeg, self.cfg.ffprobe, path, start_offset, duration, job["intro"], out, work,
                               lambda f, m: report(5 + f * 70, m), venc, lambda: self.state["recording_sid"] is not None)
+            done_extra = {}
+            try:
+                preview = work / "intro-preview.jpg"
+                done_extra["intro_image"] = base64.b64encode(
+                    media.capture_frame(self.cfg.ffmpeg, str(work / "intro.mp4"), preview, seconds=0.5)
+                ).decode("ascii")
+            except Exception as exc:
+                log.warning("Could not capture YouTube intro preview: %s", exc)
             if self.cfg.upload_after_trim:
                 self.send_job(sid, "running", "uploading to the web server", 80)
                 self.server.upload(sid, job["output_name"], str(out),
                                    lambda sent, total: report(80 + 19 * sent / max(1, total), "uploading"))
-            self.send_job(sid, "done", "", 100)
+            self.send_job(sid, "done", "", 100, **done_extra)
             self.state["jobs_done"].append(sid)
             self.state.save()
             shutil.rmtree(work, ignore_errors=True)

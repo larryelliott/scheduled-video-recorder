@@ -30,5 +30,8 @@ Install the free ntfy app, subscribe to a long random topic, and type the same t
 
 ## What is sent
 
-Recording started, recording stopped, video ready, needs attention (sermon times not found, recording missed, recording started automatically),
-errors, and offline alerts for the PC and the light sensor. Offline alerts fire once per outage and can be silenced from the dashboard.
+The available events include recording started/stopped, pulpit light first turned on, video processing started, video ready, YouTube video published, needs attention (sermon times not found, recording missed, recording started automatically), errors, and offline alerts for the PC and light sensor. Offline alerts fire once per outage and can be silenced from the dashboard. Each person can enable email and/or phone push for each event in **Settings**.
+
+When available, the recording-started notification includes a frame captured from the active recording, and the YouTube-published notification includes the video intro frame. Email clients may require permission to load remote images. ntfy receives the image as an attachment. The small JPEG previews are served through unguessable, event-specific URLs and removed after the configured video retention period; this does not expose the private video directory.
+
+When YouTube publishing is configured, completed non-test videos are published automatically after processing. A confirmed success sends the YouTube-published notification. If the result is uncertain, the existing duplicate-prevention safeguard blocks another automatic attempt; check YouTube before using the guarded admin retry.

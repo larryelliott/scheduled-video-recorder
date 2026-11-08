@@ -5,13 +5,16 @@ final class Notify
     public const EVENTS = [
         'recording_started' => 'Recording started',
         'recording_stopped' => 'Recording stopped',
+        'pulpit_light_on'    => 'Pulpit light first turned on',
+        'processing_started' => 'Video processing started',
         'video_ready'       => 'Video ready',
+        'youtube_published' => 'YouTube video published',
         'needs_attention'   => 'Needs attention (sermon times not found, recording missed)',
         'error'             => 'Errors',
         'device_offline'    => 'Windows PC or light sensor offline',
     ];
 
-    /** @var callable|null test hook: function(string $channel, array $user, string $title, string $body, string $url) */
+    /** @var callable|null test hook: function(string $channel, array $user, string $title, string $body, string $url, ?string $imageUrl) */
     public static $transport = null;
 
     /** Admins get everything by default; regular users start with nothing and opt in. */
@@ -30,16 +33,16 @@ final class Notify
         return $out;
     }
 
-    public static function send(string $event, string $title, string $body, string $path = '/'): void
+    public static function send(string $event, string $title, string $body, string $path = '/', ?string $imageUrl = null): void
     {
         $url = base_url() . $path;
         $sent = [];
         foreach (Db::all('SELECT * FROM users WHERE active = 1') as $u) {
             $p = self::prefsFor($u)[$event] ?? ['email' => false, 'ntfy' => false];
-            if ($p['email'] && $u['email'] !== '' && self::deliver('email', $u, $title, $body, $url, $event)) {
+            if ($p['email'] && $u['email'] !== '' && self::deliver('email', $u, $title, $body, $url, $event, $imageUrl)) {
                 $sent[] = $u['name'] . ':email';
             }
-            if ($p['ntfy'] && $u['ntfy_topic'] !== '' && self::deliver('ntfy', $u, $title, $body, $url, $event)) {
+            if ($p['ntfy'] && $u['ntfy_topic'] !== '' && self::deliver('ntfy', $u, $title, $body, $url, $event, $imageUrl)) {
                 $sent[] = $u['name'] . ':ntfy';
             }
         }
@@ -47,15 +50,15 @@ final class Notify
             [Clock::now(), $event, $title, implode(', ', $sent)]);
     }
 
-    private static function deliver(string $channel, array $u, string $title, string $body, string $url, string $event): bool
+    private static function deliver(string $channel, array $u, string $title, string $body, string $url, string $event, ?string $imageUrl): bool
     {
         if (self::$transport !== null) {
-            (self::$transport)($channel, $u, $title, $body, $url);
+            (self::$transport)($channel, $u, $title, $body, $url, $imageUrl);
             return true;
         }
         try {
             if ($channel === 'email') {
-                $ok = Mailer::send($u['email'], $title, $body . "\r\n\r\n" . $url);
+                $ok = Mailer::send($u['email'], $title, $body . "\r\n\r\n" . $url, $imageUrl);
                 // Remember the last problem so Settings can show it instead of failing silently.
                 Db::setSetting('mail_error', $ok ? '' : date('M j g:i A') . ': ' . Mailer::$lastError);
                 if (!$ok) {
@@ -65,8 +68,11 @@ final class Notify
             }
             $server = rtrim((string)Env::get('NTFY_SERVER', 'https://ntfy.sh'), '/');
             $prio = ($event === 'error' || $event === 'device_offline' || $event === 'needs_attention') ? '4' : '3';
-            $r = Http::request('POST', $server . '/' . rawurlencode($u['ntfy_topic']), $body,
-                ['Title: ' . self::ascii($title), 'Click: ' . $url, 'Priority: ' . $prio], 8);
+            $headers = ['Title: ' . self::ascii($title), 'Click: ' . $url, 'Priority: ' . $prio];
+            if ($imageUrl !== null) {
+                $headers[] = 'Attach: ' . $imageUrl;
+            }
+            $r = Http::request('POST', $server . '/' . rawurlencode($u['ntfy_topic']), $body, $headers, 8);
             return $r !== null;
         } catch (Throwable $e) {
             error_log('notify failed: ' . $e->getMessage());

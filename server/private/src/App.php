@@ -83,6 +83,23 @@ final class App
             return;
         }
 
+        if ($method === 'GET' && preg_match('#^/notification-image/(\d+)/(recording_started|youtube_published)/([A-Za-z0-9_-]{43})$#', $path, $m)) {
+            $image = NotificationImages::read((int)$m[1], $m[2], $m[3]);
+            if ($image === null) {
+                http_response_code(404);
+                header('Cache-Control: no-store');
+                header('X-Robots-Tag: noindex, nofollow');
+                echo 'Image not found';
+                return;
+            }
+            header('Content-Type: image/jpeg');
+            header('Content-Length: ' . strlen($image));
+            header('Cache-Control: no-store');
+            header('X-Robots-Tag: noindex, nofollow');
+            echo $image;
+            return;
+        }
+
         // ---- sign-in (no session yet) ----
         if ($path === '/login') {
             self::html(Pages::login());

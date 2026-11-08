@@ -77,7 +77,8 @@ class Server:
         return bool(data and data.get("ok"))
 
     def job(self, payload: dict) -> bool:
-        data = self._post("/api/agent/job", payload)
+        timeout = 330 if payload.get("state") == "done" else 15
+        data = self._post("/api/agent/job", payload, timeout=timeout)
         return bool(data and data.get("ok"))
 
     def upload(self, service_id: int, name: str, path: str,
