@@ -17,6 +17,18 @@ Env::set('BASE_PATH', '/vm');
 Env::set('VIDEO_DIR', sys_get_temp_dir() . '/vm-selftest-' . bin2hex(random_bytes(4)));
 Env::set('SHEET_ID', 'testsheet');
 Env::set('INTRO_TITLE', 'Test Church Sermons');
+// The self-test must not depend on your real .env, so every setting it relies on is pinned here.
+foreach (['SHEET_URL', 'SHEET_GID', 'SHEET_CSV_URL', 'DEFAULT_SERVICE_TIME', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM'] as $k) {
+    Env::set($k, '');
+}
+foreach ([
+    'RECORD_LEAD_MINUTES' => '10', 'RECORD_MAX_MINUTES' => '100', 'CUT_LUX_ON' => '100', 'CUT_LUX_OFF' => '50',
+    'CUT_MIN_SECONDS' => '180', 'CUT_MAX_SECONDS' => '5400', 'CUT_PAD_START_SECONDS' => '0', 'CUT_PAD_END_SECONDS' => '0',
+    'CUT_WINDOW_BEFORE_MIN' => '20', 'CUT_WINDOW_AFTER_MIN' => '180', 'AUTO_LIGHT_RECORD' => '1', 'AUTO_LIGHT_MAX_MINUTES' => '30',
+    'FILE_RETENTION_DAYS' => '14', 'AGENT_OFFLINE_MINUTES' => '60', 'ESP_OFFLINE_MINUTES' => '120', 'INTRO_SECONDS' => '5',
+] as $k => $v) {
+    Env::set($k, $v);
+}
 
 $pass = 0;
 $fail = 0;
@@ -204,11 +216,13 @@ check('start now creates a manual recording when nothing is near', $s['subtitle'
 check('stop now ends the window', Services::stopNow() && Schedule::window(Services::get((int)$s['id']))[1] === Clock::now());
 Api::recording(['service_id' => (int)$s['id'], 'event' => 'started', 'video_started_utc' => Clock::now()]);
 $seenBefore = (int)Monitor::device('esp')['last_seen_utc'];
+Env::set('AUTO_LIGHT_RECORD', '0'); // this test is about sermon times, not automatic recording
 Cuts::simulate(true);
 Clock::$fixed += 240;
 Cuts::simulate(false);
 $sv = Services::get((int)$s['id']);
 check('pretend light on then off produces sermon times', $sv['job_state'] === 'pending' && (int)$sv['cut_end_utc'] - (int)$sv['cut_start_utc'] === 240, json_encode([$sv['job_state'], $sv['cut_start_utc'], $sv['cut_end_utc']]));
+Env::set('AUTO_LIGHT_RECORD', '1');
 check('pretend readings do not count as the sensor checking in', (int)Monitor::device('esp')['last_seen_utc'] === $seenBefore);
 $t = Services::createTest();
 $hb = Api::heartbeat([]);
@@ -236,6 +250,8 @@ check('an unreachable mail server is reported, not thrown', Mailer::send('a@exam
 Env::set('SMTP_HOST', '');
 
 // ---- automatic recording when the light comes on with nothing scheduled --------------------------------------------------
+Db::run('DELETE FROM services WHERE auto_light = 1');
+$sent = [];
 $autoCount = function (): int {
     return (int)Db::val('SELECT COUNT(*) FROM services WHERE auto_light = 1');
 };
