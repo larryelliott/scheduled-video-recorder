@@ -1,6 +1,6 @@
 # YouTube publishing Apps Script
 
-The video manager sends a server-to-server request to a Google Apps Script web app. The script downloads the selected video from its public, unguessable URL, uploads it to the YouTube channel authorized by the script owner, and optionally adds it to a playlist.
+The video manager sends a server-to-server request to a Google Apps Script web app. The script downloads the selected video from its public, unguessable URL, uploads it to the YouTube channel authorized by the script owner, and optionally adds it to a playlist. The media URL works without signing in, but grants access only to that one video; the server's private video directory is not exposed for browsing.
 
 The working script is in [`youtube-uploader.js`](youtube-uploader.js).
 
@@ -49,12 +49,14 @@ Get the playlist ID from the playlist URL (the value of its `list` parameter). K
 |---|---|
 | `url` | Public, token-protected URL to the selected server-stored video. The script reads this field. |
 | `videoUrl` | Alias for `url`, for compatibility. |
+| `expectedBytes` | Exact stored file size. The script checks the downloaded blob against it before uploading. |
+| `fileName` | Name assigned to the downloaded video blob. |
 | `title` | Service title. |
 | `description` | Service description. |
 | `playlistId` | Destination playlist ID. |
 | `privacyStatus` | `public` for the video's normal publishing flow. |
 
-The script responds with JSON containing `status: "success"` and the YouTube `videoId` when the upload succeeds. It responds with `status: "error"` and a message when it reports an error. The video manager records confirmed successes and failures; an unavailable or unrecognized response is treated as uncertain to avoid an automatic duplicate attempt. Check YouTube before taking any further action after an uncertain result.
+The script responds with JSON containing `status: "success"`, the YouTube `videoId`, and the verified `downloadedBytes` / `expectedBytes` when the upload succeeds. It responds with `status: "error"` and a message when it reports an error. The video manager records confirmed successes and failures; an unavailable or unrecognized response is treated as uncertain to avoid an automatic duplicate attempt. Check YouTube before taking any further action after an uncertain result.
 
 ## Troubleshooting
 
@@ -64,5 +66,6 @@ The script responds with JSON containing `status: "success"` and the YouTube `vi
 | HTTP 405 | Confirm the video manager is configured with the deployed `/exec` URL, not an editor or test URL. Its server-side HTTP client follows Google's redirect. |
 | `Missing mandatory 'url' parameter` | Ensure the latest script version is deployed and the incoming JSON includes `url`. The current video manager sends both `url` and `videoUrl`; the script must read `data.url`. |
 | `Media type 'text/html' is not supported` | The URL returned HTML rather than the media file. Check for a login page, incorrect path, expired link, or web-server error; test the exact URL without signing in. |
+| YouTube video is much shorter than the server file | Confirm the active site has the latest server code and Apps Script has a newly deployed version. Check the Apps Script execution log for downloaded and expected byte counts; the upload is rejected if the full response size cannot be verified. |
 | Editor test succeeds, but server response is old or different | Deploy a **New version** and confirm the server `.env` contains that deployment's `/exec` URL. |
 | Apps Script returns an error or no JSON | Open **Executions** in the Apps Script project and inspect the failed run and its error details. Avoid retrying an outcome that might have uploaded successfully; check YouTube first. |
