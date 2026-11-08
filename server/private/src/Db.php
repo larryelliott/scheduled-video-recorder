@@ -37,6 +37,7 @@ final class Db
     {
         $ver = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
         if ($ver >= self::SCHEMA_VERSION) {
+            self::ensureYouTubeSchema($pdo);
             return;
         }
         $pdo->exec((string)file_get_contents(APP_DIR . '/schema.sql'));
@@ -46,14 +47,28 @@ final class Db
                 $pdo->exec('ALTER TABLE services ADD COLUMN auto_light INTEGER NOT NULL DEFAULT 0');
             }
         }
-        if ($ver < 3) {
-            $cols = array_column($pdo->query('PRAGMA table_info(files)')->fetchAll(), 'name');
-            if (!in_array('public_token', $cols, true)) {
-                $pdo->exec('ALTER TABLE files ADD COLUMN public_token TEXT');
-                $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_files_public_token ON files(public_token)');
-            }
-        }
+        self::ensureYouTubeSchema($pdo);
         $pdo->exec('PRAGMA user_version = ' . self::SCHEMA_VERSION);
+    }
+
+    private static function ensureYouTubeSchema(PDO $pdo): void
+    {
+        $cols = array_column($pdo->query('PRAGMA table_info(files)')->fetchAll(), 'name');
+        if (!in_array('public_token', $cols, true)) {
+            $pdo->exec('ALTER TABLE files ADD COLUMN public_token TEXT');
+            $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_files_public_token ON files(public_token)');
+        }
+        $pdo->exec("CREATE TABLE IF NOT EXISTS youtube_publications (
+            file_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            file_name TEXT NOT NULL,
+            state TEXT NOT NULL,
+            attempted_utc INTEGER NOT NULL,
+            published_utc INTEGER,
+            youtube_video_id TEXT,
+            error TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (service_id, file_name)
+        )");
     }
 
     public static function run(string $sql, array $params = []): PDOStatement
