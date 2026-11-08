@@ -17,7 +17,7 @@ Budget an evening for the first two and a few minutes for the sensor.
 1. **Make the settings file.** Copy `server/private/.env.example` to `server/private/.env` and fill it in (it is commented).
    To enable YouTube publishing, set `GOOGLE_APPS_SCRIPT_URL` to the HTTPS web-app URL and `YOUTUBE_PLAYLIST_ID` to the destination playlist.
    `YOUTUBE_PUBLISH_TIMEOUT` controls the outbound request timeout in seconds (default 120, capped at 300).
-   The Apps Script endpoint must accept a JSON POST with `videoUrl`, `title`, `description`, and `playlistId`; return JSON with
+   The Apps Script endpoint must accept a JSON POST with `url`, `title`, `description`, and `playlistId` (`videoUrl` is also sent as an alias); return JSON with
    `{"ok":true,"videoId":"..."}` after a confirmed upload, or `{"ok":false,"error":"..."}` only when it knows the upload failed.
    Transport errors or unrecognized responses are treated as uncertain and cannot be retried in the app, to prevent duplicate uploads.
    The server provides the selected video through an unguessable, per-video URL that works without an app sign-in; do not share that URL beyond the publishing integration.

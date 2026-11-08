@@ -50,6 +50,7 @@ final class YouTubePublisher
             return $line !== '';
         }));
         $payload = json_encode([
+            'url' => $videoUrl,
             'videoUrl' => $videoUrl,
             'title' => Services::label($service),
             'description' => $description,
