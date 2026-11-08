@@ -51,6 +51,16 @@ function at(string $local): int
 
 Db::open(':memory:');
 check('schema creates tables', (int)Db::val("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'") >= 10);
+$markedV3 = new PDO('sqlite::memory:');
+$markedV3->exec('CREATE TABLE files (id INTEGER PRIMARY KEY, service_id INTEGER, name TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, created_utc INTEGER NOT NULL)');
+$markedV3->exec('PRAGMA user_version = 3');
+$migrate = new ReflectionMethod('Db', 'migrate');
+$migrate->setAccessible(true);
+$migrate->invoke(null, $markedV3);
+$v3Files = array_column($markedV3->query('PRAGMA table_info(files)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+check('version 3 migration repairs a missing YouTube publication table',
+    in_array('public_token', $v3Files, true)
+    && $markedV3->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'youtube_publications'")->fetchColumn() !== false);
 
 // ---- light sensor cut detection against real recorded Sundays -----------------------------------------
 $n = EspLog::import(APP_DIR . '/tests/fixtures/esp-sample.log');
