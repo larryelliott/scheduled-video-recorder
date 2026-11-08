@@ -55,6 +55,7 @@ final class YouTubePublisher
             'title' => Services::label($service),
             'description' => $description,
             'playlistId' => $playlistId,
+            'privacyStatus' => 'public',
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($payload === false) {
             return ['ok' => false, 'tone' => 'bad', 'message' => 'Could not prepare the video for publishing.'];
