@@ -130,8 +130,13 @@ final class Pages
                 return '<p class="muted"><span class="badge ok">Published to YouTube</span>' . $watch . '</p>';
             }
             if ($publication['state'] === 'unknown') {
-                return '<p class="flash bad" role="status">' . h($publication['error'])
-                    . ' This video cannot be submitted again from the app.</p>';
+                $retry = Auth::isAdmin() && YouTubePublisher::isConfigured()
+                    ? View::post('/files/publish-retry-unknown', 'Retry after checking YouTube', 'btn danger',
+                        'Only continue if you have checked YouTube and confirmed this video was not uploaded. This will send another publish request.',
+                        ['id' => (string)$fileId, 'return' => $returnPath])
+                    : '';
+                return '<div class="flash bad" role="status"><p>' . h($publication['error'])
+                    . ' Check YouTube before retrying.</p>' . $retry . '</div>';
             }
             if ($publication['state'] === 'publishing') {
                 return '<p class="muted">Publishing request started. If it does not finish, check YouTube before taking further action.</p>';

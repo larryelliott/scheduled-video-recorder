@@ -207,6 +207,15 @@ final class App
             }
             self::back($return, $result['message'], $result['tone']);
         }
+        if ($path === '/files/publish-retry-unknown' && $admin) {
+            $fileId = (int)($_POST['id'] ?? 0);
+            $result = YouTubePublisher::retryUnknown($fileId);
+            $return = (string)($_POST['return'] ?? '/');
+            if ($return !== '/' && !preg_match('#^/services/\d+$#', $return)) {
+                $return = '/';
+            }
+            self::back($return, $result['message'], $result['tone']);
+        }
         if (preg_match('#^/services/(\d+)/(skip|unskip|intro|cuts|resetcuts|retry)$#', $path, $m)) {
             $id = (int)$m[1];
             $to = '/services/' . $id;
