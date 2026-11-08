@@ -292,6 +292,19 @@ $blocked = YouTubePublisher::publish($unknownFileId);
 check('ambiguous outcome blocks another publishing request',
     !$uncertain['ok'] && !$blocked['ok'] && $unknownAttempts === 1
     && YouTubePublisher::status($unknownFileId)['state'] === 'unknown');
+$unknownPage = Pages::service($sid);
+check('admin sees a guarded retry action after an unknown outcome',
+    strpos($unknownPage, 'Retry after checking YouTube') !== false
+    && strpos($unknownPage, 'confirmed this video was not uploaded') !== false);
+$unknownAttempts = 0;
+Http::$fetcher = function () use (&$unknownAttempts) {
+    $unknownAttempts++;
+    return '{"ok":true,"videoId":"yt-manual-retry"}';
+};
+$manualRetry = YouTubePublisher::retryUnknown($unknownFileId);
+check('admin-confirmed unknown outcome can be retried',
+    $manualRetry['ok'] && $unknownAttempts === 1
+    && YouTubePublisher::status($unknownFileId)['state'] === 'published');
 Http::$fetcher = null;
 Env::set('GOOGLE_APPS_SCRIPT_URL', '');
 Env::set('YOUTUBE_PLAYLIST_ID', '');

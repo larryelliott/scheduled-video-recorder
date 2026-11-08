@@ -150,18 +150,24 @@ final class Http
             return $res;
         }
         $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_CUSTOMREQUEST => $method,
+        $options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 5,
             CURLOPT_TIMEOUT => $timeout,
             CURLOPT_CONNECTTIMEOUT => 6,
             CURLOPT_HTTPHEADER => $headers,
-        ]);
-        if ($body !== null) {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        ];
+        if (strtoupper($method) === 'POST') {
+            // CURLOPT_POST lets cURL follow Apps Script's 302 response as a GET.
+            $options[CURLOPT_POST] = true;
+        } elseif (strtoupper($method) !== 'GET') {
+            $options[CURLOPT_CUSTOMREQUEST] = strtoupper($method);
         }
+        if ($body !== null) {
+            $options[CURLOPT_POSTFIELDS] = $body;
+        }
+        curl_setopt_array($ch, $options);
         $res = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);

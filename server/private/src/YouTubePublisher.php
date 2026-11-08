@@ -109,6 +109,21 @@ final class YouTubePublisher
         return self::finish($serviceId, $fileName, 'unknown', 'The publishing service returned an unrecognized response. Check YouTube before taking further action.');
     }
 
+    public static function retryUnknown(int $fileId): array
+    {
+        $file = Db::one('SELECT service_id, name FROM files WHERE id = ?', [$fileId]);
+        if ($file === null) {
+            return ['ok' => false, 'tone' => 'bad', 'message' => 'The video is no longer on the server.'];
+        }
+        $claimed = Db::run("UPDATE youtube_publications SET state = 'failed', error = 'Admin confirmed no upload exists' "
+            . "WHERE service_id = ? AND file_name = ? AND state = 'unknown'",
+            [(int)$file['service_id'], (string)$file['name']]);
+        if ($claimed->rowCount() !== 1) {
+            return ['ok' => false, 'tone' => 'warn', 'message' => 'This video is no longer awaiting an outcome check. Reload the page.'];
+        }
+        return self::publish($fileId);
+    }
+
     private static function endpoint(): ?string
     {
         $url = trim((string)Env::get('GOOGLE_APPS_SCRIPT_URL', ''));
