@@ -13,6 +13,7 @@ require_once __DIR__ . '/Flash.php';
 require_once __DIR__ . '/Mailer.php';
 require_once __DIR__ . '/Notify.php';
 require_once __DIR__ . '/Files.php';
+require_once __DIR__ . '/YouTubePublisher.php';
 require_once __DIR__ . '/Schedule.php';
 require_once __DIR__ . '/Cuts.php';
 require_once __DIR__ . '/EspLog.php';

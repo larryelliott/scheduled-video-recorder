@@ -93,7 +93,20 @@ CREATE TABLE IF NOT EXISTS files (         -- videos stored on this server
   name        TEXT NOT NULL,
   path        TEXT NOT NULL,
   size        INTEGER NOT NULL DEFAULT 0,
-  created_utc INTEGER NOT NULL
+  created_utc INTEGER NOT NULL,
+  public_token TEXT UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS youtube_publications (
+  file_id          INTEGER NOT NULL,
+  service_id       INTEGER NOT NULL,
+  file_name        TEXT NOT NULL,
+  state            TEXT NOT NULL, -- publishing|published|failed|unknown
+  attempted_utc    INTEGER NOT NULL,
+  published_utc    INTEGER,
+  youtube_video_id TEXT,
+  error            TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (service_id, file_name)
 );
 
 CREATE TABLE IF NOT EXISTS agent_files (   -- latest inventory reported by winpc
