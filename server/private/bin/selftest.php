@@ -292,6 +292,8 @@ check('publisher sends metadata and a scoped public video URL',
     $published['ok'] && $requests[0][0] === 'POST'
     && $requests[0][1] === 'https://script.google.com/macros/s/test/exec'
     && ($publishedPayload['url'] ?? '') === ($publishedPayload['videoUrl'] ?? '')
+    && ($publishedPayload['expectedBytes'] ?? 0) === 5
+    && ($publishedPayload['fileName'] ?? '') === 'publish.mp4'
     && ($publishedPayload['playlistId'] ?? '') === 'playlist-test'
     && ($publishedPayload['title'] ?? '') === Services::label(Services::get($sid))
     && isset($tokenMatch[1]), json_encode($publishedPayload));

@@ -17,7 +17,8 @@ function doPost(e) {
     }
     
     // 1. Call your upload function to post to YouTube
-    var videoId = upload(url, title, description, topics, privacyStatus, data.expectedBytes, data.fileName);
+    var uploadResult = upload(url, title, description, topics, privacyStatus, data.expectedBytes, data.fileName);
+    var videoId = uploadResult.videoId;
     
     // 2. Add the video to your specified playlist
     if (playlistId !== "") {
@@ -28,7 +29,9 @@ function doPost(e) {
       "status": "success",
       "message": "Video successfully uploaded and added to playlist!",
       "videoId": videoId,
-      "playlistItemId": playlistItemId
+      "playlistItemId": playlistItemId,
+      "downloadedBytes": uploadResult.downloadedBytes,
+      "expectedBytes": uploadResult.expectedBytes
     })).setMimeType(ContentService.MimeType.JSON);
     
   } catch (err) {
@@ -39,7 +42,7 @@ function doPost(e) {
   }
 }
 
-// Core upload function (returns the new video's ID)
+// Downloads and verifies the video before returning its YouTube ID and byte counts.
 function upload(url, title, description, topics, privacyStatus, expectedBytes, fileName) {
   var source = UrlFetchApp.fetch(url, {muteHttpExceptions: true});
   if (source.getResponseCode() !== 200) {
@@ -52,8 +55,12 @@ function upload(url, title, description, topics, privacyStatus, expectedBytes, f
   var headers = source.getHeaders();
   var contentLength = headerValue(headers, "Content-Length");
   var requiredBytes = Number(expectedBytes || contentLength || 0);
+  console.log("Downloaded video: " + actualBytes + " bytes; expected: " + (requiredBytes || "not provided"));
   if (requiredBytes > 0 && actualBytes !== requiredBytes) {
     throw new Error("Video download was incomplete: expected " + requiredBytes + " bytes, received " + actualBytes + ".");
+  }
+  if (requiredBytes <= 0) {
+    throw new Error("Could not verify the downloaded video size. Deploy the server update that sends expectedBytes.");
   }
   
   var resource = { 
@@ -68,7 +75,7 @@ function upload(url, title, description, topics, privacyStatus, expectedBytes, f
   };
   
   var response = YouTube.Videos.insert(resource, "snippet,status", videoData);
-  return response.id; 
+  return {videoId: response.id, downloadedBytes: actualBytes, expectedBytes: requiredBytes};
 }
 
 function headerValue(headers, name) {

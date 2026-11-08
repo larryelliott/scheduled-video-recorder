@@ -52,6 +52,8 @@ final class YouTubePublisher
         $payload = json_encode([
             'url' => $videoUrl,
             'videoUrl' => $videoUrl,
+            'expectedBytes' => (int)$video['size'],
+            'fileName' => $fileName,
             'title' => Services::label($service),
             'description' => $description,
             'playlistId' => $playlistId,
