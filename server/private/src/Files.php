@@ -85,12 +85,46 @@ final class Files
         $size = (int)filesize($dest);
         Db::run('INSERT INTO files (service_id, name, path, size, created_utc) VALUES (?, ?, ?, ?, ?)',
             [$serviceId, $name, $dest, $size, Clock::now()]);
-        return ['ok' => true, 'size' => $size, 'file_id' => Db::id()];
+        $fileId = Db::id();
+        Db::run('UPDATE youtube_publications SET file_id = ? WHERE service_id = ? AND file_name = ?',
+            [$fileId, $serviceId, $name]);
+        return ['ok' => true, 'size' => $size, 'file_id' => $fileId];
     }
 
     public static function forService(int $serviceId): array
     {
         return Db::all('SELECT * FROM files WHERE service_id = ? ORDER BY id DESC', [$serviceId]);
+    }
+
+    public static function publicToken(int $fileId): ?string
+    {
+        $f = Db::one('SELECT id, public_token FROM files WHERE id = ?', [$fileId]);
+        if ($f === null) {
+            return null;
+        }
+        if ($f['public_token'] !== null && $f['public_token'] !== '') {
+            return (string)$f['public_token'];
+        }
+        $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+        Db::run('UPDATE files SET public_token = ? WHERE id = ? AND public_token IS NULL', [$token, $fileId]);
+        $stored = Db::val('SELECT public_token FROM files WHERE id = ?', [$fileId]);
+        return $stored === null ? null : (string)$stored;
+    }
+
+    public static function publicUrl(int $fileId): ?string
+    {
+        $token = self::publicToken($fileId);
+        return $token === null ? null : base_url() . '/public-video/' . $fileId . '/' . rawurlencode($token);
+    }
+
+    public static function publicFile(int $fileId, string $token): ?array
+    {
+        $f = Db::one('SELECT * FROM files WHERE id = ?', [$fileId]);
+        if ($f === null || !is_file((string)$f['path']) || !is_string($f['public_token']) || $f['public_token'] === ''
+            || !hash_equals((string)$f['public_token'], $token)) {
+            return null;
+        }
+        return $f;
     }
 
     public static function allServerFiles(): array
@@ -157,7 +191,9 @@ final class Files
         }
         @set_time_limit(0);
         http_response_code($code);
-        header('Content-Type: video/mp4');
+        $ext = strtolower(pathinfo($downloadName, PATHINFO_EXTENSION));
+        $contentType = ['mp4' => 'video/mp4', 'mov' => 'video/quicktime', 'mkv' => 'video/x-matroska'][$ext] ?? 'application/octet-stream';
+        header('Content-Type: ' . $contentType);
         header('Accept-Ranges: bytes');
         header('Cache-Control: private, max-age=0');
         header('Content-Length: ' . ($end - $start + 1));

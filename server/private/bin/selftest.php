@@ -18,7 +18,8 @@ Env::set('VIDEO_DIR', sys_get_temp_dir() . '/vm-selftest-' . bin2hex(random_byte
 Env::set('SHEET_ID', 'testsheet');
 Env::set('INTRO_TITLE', 'Test Church Sermons');
 // The self-test must not depend on your real .env, so every setting it relies on is pinned here.
-foreach (['SHEET_URL', 'SHEET_GID', 'SHEET_CSV_URL', 'DEFAULT_SERVICE_TIME', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM'] as $k) {
+foreach (['SHEET_URL', 'SHEET_GID', 'SHEET_CSV_URL', 'DEFAULT_SERVICE_TIME', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM',
+          'GOOGLE_APPS_SCRIPT_URL', 'YOUTUBE_PLAYLIST_ID'] as $k) {
     Env::set($k, '');
 }
 foreach ([
@@ -108,6 +109,11 @@ check('refresh does not overwrite an edited intro', Services::get((int)$next['id
 // ---- people, links, notifications ------------------------------------------------------------------------
 $larry = Auth::createUser('Larry', 'admin', 'larry@example.test');
 $pastor = Auth::createUser('Pastor', 'user', 'pastor@example.test');
+$sessionToken = Auth::token();
+$sessionCsrf = Auth::token();
+Db::run('INSERT INTO sessions (user_id, token_hash, csrf, created_utc, last_seen_utc, expires_utc) VALUES (?, ?, ?, ?, ?, ?)',
+    [$larry, Auth::hash($sessionToken), $sessionCsrf, Clock::now(), Clock::now(), Clock::now() + Auth::LIFETIME]);
+$_COOKIE[Auth::COOKIE] = $sessionToken;
 $tok = Auth::createLink($larry);
 $u = Auth::redeem($tok);
 check('magic link signs the right person in', $u !== null && $u['name'] === 'Larry');
@@ -201,6 +207,84 @@ Files::togglePin((string)$fileName);
 check('pinned file survives cleanup', Files::cleanup() === [] && (int)Db::val('SELECT COUNT(*) FROM files') === 1);
 Files::togglePin((string)$fileName);
 check('expired file is deleted', count(Files::cleanup()) === 1 && (int)Db::val('SELECT COUNT(*) FROM files') === 0);
+
+// ---- YouTube publishing ------------------------------------------------------------------------------------------
+Env::set('YOUTUBE_PLAYLIST_ID', 'playlist-test');
+Env::set('GOOGLE_APPS_SCRIPT_URL', 'http://script.google.com/macros/s/test/exec');
+check('publisher refuses a non-HTTPS endpoint', !YouTubePublisher::isConfigured());
+Env::set('GOOGLE_APPS_SCRIPT_URL', 'https://script.google.com/macros/s/test/exec');
+$makePublishFile = function (string $name) use ($sid): int {
+    $tmp = Files::dir() . '/publish-' . bin2hex(random_bytes(4)) . '.part';
+    file_put_contents($tmp, 'video');
+    $r = Files::register($sid, $name, $tmp);
+    return (int)$r['file_id'];
+};
+$publishedFileId = $makePublishFile('publish.mp4');
+$requests = [];
+$todayBefore = Pages::dashboard();
+$serviceBefore = Pages::service($sid);
+check('admin sees publish buttons on Today and the service page',
+    strpos($todayBefore, 'Publish to YouTube') !== false
+    && strpos($serviceBefore, 'Publish to YouTube') !== false);
+Http::$fetcher = function ($method, $url, $body, $headers) use (&$requests) {
+    $requests[] = [$method, $url, $body, $headers];
+    return '{"ok":true,"videoId":"yt-test-123"}';
+};
+$published = YouTubePublisher::publish($publishedFileId);
+$publishedPayload = json_decode($requests[0][2], true);
+$publicPath = (string)parse_url($publishedPayload['videoUrl'] ?? '', PHP_URL_PATH);
+preg_match('#/public-video/' . $publishedFileId . '/([A-Za-z0-9_-]{43})$#', $publicPath, $tokenMatch);
+check('publisher sends metadata and a scoped public video URL',
+    $published['ok'] && $requests[0][0] === 'POST'
+    && $requests[0][1] === 'https://script.google.com/macros/s/test/exec'
+    && ($publishedPayload['playlistId'] ?? '') === 'playlist-test'
+    && ($publishedPayload['title'] ?? '') === Services::label(Services::get($sid))
+    && isset($tokenMatch[1]), json_encode($publishedPayload));
+$todayPage = Pages::dashboard();
+$servicePage = Pages::service($sid);
+check('published status removes repeat buttons from both pages',
+    strpos($todayPage, 'Published to YouTube') !== false
+    && strpos($servicePage, 'Published to YouTube') !== false
+    && strpos($todayPage, 'Publish to YouTube') === false
+    && strpos($servicePage, 'Publish to YouTube') === false);
+check('public video token grants access only to its registered file',
+    isset($tokenMatch[1]) && Files::publicFile($publishedFileId, $tokenMatch[1]) !== null
+    && Files::publicFile($publishedFileId, str_repeat('x', 43)) === null);
+$duplicate = YouTubePublisher::publish($publishedFileId);
+check('published video cannot be submitted twice', !$duplicate['ok'] && count($requests) === 1
+    && YouTubePublisher::status($publishedFileId)['state'] === 'published');
+Files::delete($publishedFileId);
+$replacementFileId = $makePublishFile('publish.mp4');
+$replacementDuplicate = YouTubePublisher::publish($replacementFileId);
+check('published state survives deleting and re-uploading the same service file',
+    !$replacementDuplicate['ok'] && count($requests) === 1
+    && YouTubePublisher::status($replacementFileId)['state'] === 'published');
+
+$failedFileId = $makePublishFile('failed-publish.mp4');
+$attempt = 0;
+Http::$fetcher = function ($method, $url, $body, $headers) use (&$attempt) {
+    $attempt++;
+    return $attempt === 1 ? '{"ok":false,"error":"Quota exceeded"}' : '{"ok":true,"videoId":"yt-retry-1"}';
+};
+$failed = YouTubePublisher::publish($failedFileId);
+$retried = YouTubePublisher::publish($failedFileId);
+check('only a confirmed failure can be retried', !$failed['ok'] && $retried['ok'] && $attempt === 2
+    && YouTubePublisher::status($failedFileId)['state'] === 'published');
+
+$unknownFileId = $makePublishFile('unknown-publish.mp4');
+$unknownAttempts = 0;
+Http::$fetcher = function () use (&$unknownAttempts) {
+    $unknownAttempts++;
+    return null;
+};
+$uncertain = YouTubePublisher::publish($unknownFileId);
+$blocked = YouTubePublisher::publish($unknownFileId);
+check('ambiguous outcome blocks another publishing request',
+    !$uncertain['ok'] && !$blocked['ok'] && $unknownAttempts === 1
+    && YouTubePublisher::status($unknownFileId)['state'] === 'unknown');
+Http::$fetcher = null;
+Env::set('GOOGLE_APPS_SCRIPT_URL', '');
+Env::set('YOUTUBE_PLAYLIST_ID', '');
 
 // ---- controls ------------------------------------------------------------------------------------------------------------
 Clock::$fixed = at('2026-11-02 09:00');

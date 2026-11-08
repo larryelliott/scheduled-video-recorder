@@ -69,6 +69,20 @@ final class App
             json_out(['ok' => false, 'error' => 'Not found'], 404);
         }
 
+        if ($method === 'GET' && preg_match('#^/public-video/(\d+)/([A-Za-z0-9_-]{43})$#', $path, $m)) {
+            $f = Files::publicFile((int)$m[1], $m[2]);
+            if ($f === null) {
+                http_response_code(404);
+                header('Cache-Control: no-store');
+                header('X-Robots-Tag: noindex, nofollow');
+                echo 'Video not found';
+                return;
+            }
+            header('X-Robots-Tag: noindex, nofollow');
+            Files::stream($f['path'], $f['name'], true);
+            return;
+        }
+
         // ---- sign-in (no session yet) ----
         if ($path === '/login') {
             self::html(Pages::login());
@@ -183,6 +197,15 @@ final class App
                 $ret = '/';
             }
             self::back($ret, 'Pretended the pulpit light turned ' . ($on ? 'on' : 'off') . ' at ' . fmt_local(Clock::now(), 'g:i:s A') . '.');
+        }
+        if ($path === '/files/publish' && $admin) {
+            $fileId = (int)($_POST['id'] ?? 0);
+            $result = YouTubePublisher::publish($fileId);
+            $return = (string)($_POST['return'] ?? '/');
+            if ($return !== '/' && !preg_match('#^/services/\d+$#', $return)) {
+                $return = '/';
+            }
+            self::back($return, $result['message'], $result['tone']);
         }
         if (preg_match('#^/services/(\d+)/(skip|unskip|intro|cuts|resetcuts|retry)$#', $path, $m)) {
             $id = (int)$m[1];

@@ -15,6 +15,12 @@ Budget an evening for the first two and a few minutes for the sensor.
 ## 1. Web server
 
 1. **Make the settings file.** Copy `server/private/.env.example` to `server/private/.env` and fill it in (it is commented).
+   To enable YouTube publishing, set `GOOGLE_APPS_SCRIPT_URL` to the HTTPS web-app URL and `YOUTUBE_PLAYLIST_ID` to the destination playlist.
+   `YOUTUBE_PUBLISH_TIMEOUT` controls the outbound request timeout in seconds (default 120, capped at 300).
+   The Apps Script endpoint must accept a JSON POST with `videoUrl`, `title`, `description`, and `playlistId`; return JSON with
+   `{"ok":true,"videoId":"..."}` after a confirmed upload, or `{"ok":false,"error":"..."}` only when it knows the upload failed.
+   Transport errors or unrecognized responses are treated as uncertain and cannot be retried in the app, to prevent duplicate uploads.
+   The server provides the selected video through an unguessable, per-video URL that works without an app sign-in; do not share that URL beyond the publishing integration.
 2. **Upload two folders over SFTP.** Never put the private folder inside a web folder.
    - `server/private/` to `~/video-manager-private/` (your home folder, next to your domain folders, not inside them)
    - the **contents** of `server/public/` to `~/<your-domain>/video-manager/`, including `.htaccess`
@@ -54,6 +60,7 @@ The dashboard shows the sensor's latest reading within a minute of it connecting
 
 1. On the dashboard tap **Run a test recording** (admin). Within about 20 seconds the status lamp turns red, the PC records for 100 seconds,
    trims 25 seconds, adds the intro, uploads, and you get a "Video ready" message. Tap **Download** on your phone and watch it.
+   For a real server-stored video, admins can use **Publish to YouTube** from Today’s Latest Video or that service’s page. Test videos cannot be published.
 2. Turn the pulpit light on, wait a few minutes, turn it off. The dashboard device row shows the readings; on a real service they appear on the service page.
 3. Unplug the PC's network for an hour (or temporarily lower `AGENT_OFFLINE_MINUTES` to 5) to see the offline alert and the **Silence alerts** button.
 

@@ -101,21 +101,60 @@ final class Pages
         $ready = Services::latestReady();
         if ($ready !== null) {
             $body .= '<section class="card"><p class="kicker">Latest video</p><h2>' . h(Services::label($ready)) . '</h2>'
-                . self::fileButtons((int)$ready['id']) . '</section>';
+                . self::fileButtons((int)$ready['id'], '/') . '</section>';
         }
         return View::layout('Today', $body, 'dash');
     }
 
-    private static function fileButtons(int $serviceId): string
+    private static function fileButtons(int $serviceId, string $returnPath): string
     {
         $out = '';
         foreach (Files::forService($serviceId) as $f) {
             $u = h(base_path() . '/download/' . (int)$f['id']);
             $out .= '<p class="file"><strong>' . h($f['name']) . '</strong><br><span class="muted">' . h(fmt_bytes((int)$f['size'])) . ', deletes '
                 . h(fmt_local(Files::expiresAt((int)$f['created_utc']), 'M j')) . '</span></p>'
-                . '<div class="actions"><a class="btn primary" href="' . $u . '">Download</a><a class="btn" href="' . $u . '?inline=1">Watch</a></div>';
+                . '<div class="actions"><a class="btn primary" href="' . $u . '">Download</a><a class="btn" href="' . $u . '?inline=1">Watch</a></div>'
+                . self::youtubePublication((int)$f['id'], $serviceId, $returnPath);
         }
         return $out !== '' ? $out : '<p class="muted">No file on the server yet.</p>';
+    }
+
+    private static function youtubePublication(int $fileId, int $serviceId, string $returnPath): string
+    {
+        $publication = YouTubePublisher::status($fileId);
+        if ($publication !== null) {
+            if ($publication['state'] === 'published') {
+                $videoId = (string)($publication['youtube_video_id'] ?? '');
+                $watch = preg_match('/^[A-Za-z0-9_-]{1,128}$/', $videoId)
+                    ? ' <a href="https://youtu.be/' . rawurlencode($videoId) . '" target="_blank" rel="noopener">Watch on YouTube</a>' : '';
+                return '<p class="muted"><span class="badge ok">Published to YouTube</span>' . $watch . '</p>';
+            }
+            if ($publication['state'] === 'unknown') {
+                return '<p class="flash bad" role="status">' . h($publication['error'])
+                    . ' This video cannot be submitted again from the app.</p>';
+            }
+            if ($publication['state'] === 'publishing') {
+                return '<p class="muted">Publishing request started. If it does not finish, check YouTube before taking further action.</p>';
+            }
+        }
+        if (!Auth::isAdmin()) {
+            return '';
+        }
+        $service = Services::get($serviceId);
+        if ($service !== null && (int)$service['is_test'] === 1) {
+            return '<p class="muted">Test videos cannot be published.</p>';
+        }
+        if (!YouTubePublisher::isConfigured()) {
+            return '<p class="muted">YouTube publishing is not configured.</p>';
+        }
+        $retry = $publication !== null && $publication['state'] === 'failed';
+        $label = $retry ? 'Retry YouTube publish' : 'Publish to YouTube';
+        $confirm = $retry
+            ? 'The last request was confirmed as failed. Try publishing this video again?'
+            : 'Publish this video to YouTube? This cannot be undone.';
+        $message = $retry ? '<p class="muted">Last attempt failed: ' . h($publication['error']) . '</p>' : '';
+        return $message . View::post('/files/publish', $label, 'btn primary', $confirm,
+            ['id' => (string)$fileId, 'return' => $returnPath]);
     }
 
     // ---- services ------------------------------------------------------------------------
@@ -212,7 +251,7 @@ final class Pages
         } elseif ($s['job_state'] === 'pending') {
             $progress = '<p class="muted">Waiting for the Windows PC to pick this up.</p>';
         }
-        return '<section class="card"><h2>Video</h2>' . $progress . self::fileButtons($id)
+        return '<section class="card"><h2>Video</h2>' . $progress . self::fileButtons($id, '/services/' . $id)
             . ($s['job_state'] === 'failed' ? '<p class="flash bad">' . h($s['job_msg']) . '</p>' . View::post("/services/$id/retry", 'Try processing again', 'btn')
                : (($s['cut_start_utc'] !== null && in_array($s['status'], ['recorded', 'ready'], true) && !in_array($s['job_state'], ['running', 'pending'], true))
                    ? View::post("/services/$id/retry", 'Make the video again', 'btn', 'Make the video again with the current intro and sermon times?') : ''))
