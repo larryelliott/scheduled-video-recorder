@@ -140,7 +140,8 @@ final class Services
                     [$vs + 10, $vs + 35, $id]);
             }
             if (!$wasRecording) {
-                Notify::send('recording_started', 'Recording started', self::label($s) . ' started recording.', $path);
+                $imageUrl = NotificationImages::store($id, 'recording_started', (string)($b['recording_image'] ?? ''));
+                Notify::send('recording_started', 'Recording started', self::label($s) . ' started recording.', $path, $imageUrl);
             }
         } elseif ($ev === 'stopped') {
             $changed = in_array($s['status'], ['scheduled', 'recording'], true);
@@ -171,10 +172,14 @@ final class Services
         $path = '/services/' . $id;
 
         if ($state === 'running') {
+            $started = $s['job_state'] !== 'running';
             $attempts = (int)$s['job_attempts'] + ($s['job_state'] === 'running' ? 0 : 1);
             Db::run("UPDATE services SET job_state = 'running', job_msg = ?, job_progress = ?, job_attempts = ?,
                      job_updated_utc = ? WHERE id = ?",
                 [$msg, max(0, min(100, (int)($b['progress'] ?? 0))), $attempts, $now, $id]);
+            if ($started) {
+                Notify::send('processing_started', 'Video processing started', self::label($s) . ' is being processed.', $path);
+            }
         } elseif ($state === 'failed') {
             Db::run("UPDATE services SET job_state = 'failed', job_msg = ?, job_updated_utc = ? WHERE id = ?", [$msg, $now, $id]);
             Notify::send('error', 'Video processing failed', self::label($s) . ': ' . $msg, $path);
@@ -183,10 +188,17 @@ final class Services
             if (count($files) === 0) {
                 return ['ok' => false, 'error' => 'No uploaded file found for this service'];
             }
+            $wasDone = $s['job_state'] === 'done' && $s['status'] === 'ready';
             Db::run("UPDATE services SET job_state = 'done', job_msg = '', job_progress = 100, status = 'ready',
                      ready_utc = ?, output_name = ?, job_updated_utc = ?, updated_utc = ? WHERE id = ?",
                 [$now, $files[0]['name'], $now, $now, $id]);
-            Notify::send('video_ready', 'Video ready', self::label($s) . ' is ready to download.', $path);
+            if (!$wasDone) {
+                NotificationImages::store($id, 'youtube_published', (string)($b['intro_image'] ?? ''));
+                Notify::send('video_ready', 'Video ready', self::label($s) . ' is ready to download.', $path);
+                if (YouTubePublisher::isConfigured()) {
+                    YouTubePublisher::publish((int)$files[0]['id']);
+                }
+            }
         } else {
             return ['ok' => false, 'error' => 'Unknown state'];
         }
@@ -202,12 +214,15 @@ final class Services
      */
     public static function lightChanged(float $lux, ?float $prevLux, int $ts): void
     {
-        if (Env::get('AUTO_LIGHT_RECORD', '1') === '0') {
-            return;
-        }
         $now = Clock::now();
         $hi = (float)Env::get('CUT_LUX_ON', '100');
         $lo = (float)Env::get('CUT_LUX_OFF', '50');
+        if ($prevLux !== null && $prevLux <= $hi && $lux > $hi) {
+            Notify::send('pulpit_light_on', 'Pulpit light turned on', 'The pulpit light has turned on.');
+        }
+        if (Env::get('AUTO_LIGHT_RECORD', '1') === '0') {
+            return;
+        }
 
         if ($lux < $lo) { // light off: end a light-triggered recording that is still open
             Db::run('UPDATE services SET rec_stop_utc = ?, updated_utc = ? WHERE auto_light = 1 AND rec_stop_utc > ?', [$now, $now, $now]);

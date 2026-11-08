@@ -24,27 +24,35 @@ final class Mailer
             : 'SMTP via ' . $host . ':' . Env::int('SMTP_PORT', 587);
     }
 
-    public static function send(string $to, string $subject, string $body): bool
+    public static function send(string $to, string $subject, string $body, ?string $imageUrl = null): bool
     {
         self::$lastError = '';
         try {
             $host = trim((string)Env::get('SMTP_HOST', ''));
             if ($host === '') {
-                $headers = 'From: Video Manager <' . self::addr(self::from()) . ">\r\nContent-Type: text/plain; charset=UTF-8";
-                $ok = @mail(self::addr($to), self::encodeHeader($subject), $body, $headers);
+                if ($imageUrl !== null) {
+                    $boundary = 'vm_' . bin2hex(random_bytes(12));
+                    $headers = 'From: Video Manager <' . self::addr(self::from()) . ">\r\nMIME-Version: 1.0\r\n"
+                        . 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
+                    $message = self::multipartBody($body, $imageUrl, $boundary);
+                } else {
+                    $headers = 'From: Video Manager <' . self::addr(self::from()) . ">\r\nContent-Type: text/plain; charset=UTF-8";
+                    $message = $body;
+                }
+                $ok = @mail(self::addr($to), self::encodeHeader($subject), $message, $headers);
                 if (!$ok) {
                     self::$lastError = 'PHP mail() refused the message. Set SMTP_HOST, SMTP_USER and SMTP_PASS in .env to send through a real mailbox.';
                 }
                 return $ok;
             }
-            return self::smtp($host, self::addr($to), self::addr(self::from()), $subject, $body);
+            return self::smtp($host, self::addr($to), self::addr(self::from()), $subject, $body, $imageUrl);
         } catch (Throwable $e) {
             self::$lastError = $e->getMessage();
             return false;
         }
     }
 
-    private static function smtp(string $host, string $to, string $from, string $subject, string $body): bool
+    private static function smtp(string $host, string $to, string $from, string $subject, string $body, ?string $imageUrl): bool
     {
         $port = Env::int('SMTP_PORT', 587);
         $secure = strtolower(trim((string)Env::get('SMTP_SECURE', 'tls'))); // tls = STARTTLS (587), ssl = implicit (465), none
@@ -83,11 +91,18 @@ final class Mailer
                 'Subject: ' . self::encodeHeader($subject),
                 'Message-ID: <' . bin2hex(random_bytes(8)) . '@' . $me . '>',
                 'MIME-Version: 1.0',
-                'Content-Type: text/plain; charset=UTF-8',
-                'Content-Transfer-Encoding: base64',
             ];
-            // Base64 body: no line can start with "." so no dot-stuffing is needed, and chunk_split ends with CRLF.
-            fwrite($fp, implode("\r\n", $headers) . "\r\n\r\n" . chunk_split(base64_encode($body), 76, "\r\n") . ".\r\n");
+            if ($imageUrl !== null) {
+                $boundary = 'vm_' . bin2hex(random_bytes(12));
+                $headers[] = 'Content-Type: multipart/alternative; boundary="' . $boundary . '"';
+                $message = self::multipartBody($body, $imageUrl, $boundary);
+            } else {
+                $headers[] = 'Content-Type: text/plain; charset=UTF-8';
+                $headers[] = 'Content-Transfer-Encoding: base64';
+                $message = chunk_split(base64_encode($body), 76, "\r\n");
+            }
+            // Base64 parts: no line can start with "." so SMTP dot-stuffing is unnecessary.
+            fwrite($fp, implode("\r\n", $headers) . "\r\n\r\n" . $message . ".\r\n");
             self::expect($fp, [250]);
             @fwrite($fp, "QUIT\r\n");
             return true;
@@ -129,5 +144,18 @@ final class Mailer
     private static function encodeHeader(string $s): string
     {
         return '=?UTF-8?B?' . base64_encode($s) . '?=';
+    }
+
+    private static function multipartBody(string $body, string $imageUrl, string $boundary): string
+    {
+        $safeBody = htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $safeUrl = htmlspecialchars($imageUrl, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $html = '<!doctype html><html><body><p>' . nl2br($safeBody, false)
+            . '</p><p><img src="' . $safeUrl . '" alt="Video preview" style="max-width:100%;height:auto"></p></body></html>';
+        return '--' . $boundary . "\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            . chunk_split(base64_encode($body), 76, "\r\n")
+            . '--' . $boundary . "\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+            . chunk_split(base64_encode($html), 76, "\r\n")
+            . '--' . $boundary . "--\r\n";
     }
 }

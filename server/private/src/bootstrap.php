@@ -12,6 +12,7 @@ require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Flash.php';
 require_once __DIR__ . '/Mailer.php';
 require_once __DIR__ . '/Notify.php';
+require_once __DIR__ . '/NotificationImages.php';
 require_once __DIR__ . '/Files.php';
 require_once __DIR__ . '/YouTubePublisher.php';
 require_once __DIR__ . '/Schedule.php';

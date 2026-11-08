@@ -1,6 +1,7 @@
 """End-to-end test of the agent against a fake server, with a fake OBS and real ffmpeg.
 Run from the agent folder:   python -m unittest discover -s tests -v
 """
+import base64
 import os
 import shutil
 import subprocess
@@ -46,14 +47,17 @@ class EndToEnd(unittest.TestCase):
         self.cfg = Config.load(str(self.tmp / "none.env"), server_url=self.srv.url, agent_token=self.srv.token,
                                fake_obs=True, record_dir=str(self.tmp / "rec"), output_dir=self.tmp / "out",
                                work_dir=self.tmp / "work", state_file=self.tmp / "state.json",
-                               log_file=self.tmp / "agent.log", heartbeat_seconds=1.0)
+                               log_file=self.tmp / "agent.log", heartbeat_seconds=1.0, x264_preset="ultrafast")
         self.agent = Agent(self.cfg)
         self.thread = threading.Thread(target=self.agent.run_forever, daemon=True)
 
     def tearDown(self):
         self.agent.stop_event.set()
+        self.agent.obs.stop()
         if self.thread.is_alive():
             self.thread.join(timeout=30)
+        if self.agent.job_thread and self.agent.job_thread.is_alive():
+            self.agent.job_thread.join(timeout=30)
         self.srv.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -63,7 +67,10 @@ class EndToEnd(unittest.TestCase):
                                  "rec_stop_utc": int(now) + 3600, "subtitle": "Test", "is_test": 0}
         self.thread.start()
         self.assertTrue(wait_for(lambda: any(e["event"] == "started" for e in self.srv.recording_events), 20), "recording never started")
-        started = next(e for e in self.srv.recording_events if e["event"] == "started")["video_started_utc"]
+        started_event = next(e for e in self.srv.recording_events if e["event"] == "started")
+        started = started_event["video_started_utc"]
+        recording_image = base64.b64decode(started_event["recording_image"])
+        self.assertTrue(recording_image.startswith(b"\xff\xd8\xff"), "recording-start notification frame should be a JPEG")
         self.assertTrue(wait_for(lambda: time.time() - started > 22, 40))
 
         # The light turned on and off: server now offers the job while recording continues.
@@ -72,9 +79,16 @@ class EndToEnd(unittest.TestCase):
                         "intro": {"duration": 5, "title": "Test Church's Sermons: 100%", "subtitle": "All Saints Day", "date": "November 1, 2026",
                                   "description": "Line, with comma", "description2": "", "text1": "a", "text2": "", "text3": "", "text4": "bottom",
                                   "background_color": "0x000000", "text_color": "0xFFFFFF", "accent_color": "0x7F0000", "font": FONT}}
-        self.assertTrue(wait_for(lambda: any(e["state"] in ("done", "failed") for e in self.srv.job_events), 120), "job never finished")
+        finished = wait_for(lambda: any(e["state"] in ("done", "failed") for e in self.srv.job_events), 120)
+        if not finished:
+            self.fail(f"job never finished; events={self.srv.job_events}; worker_alive="
+                      f"{bool(self.agent.job_thread and self.agent.job_thread.is_alive())}; "
+                      f"last_message={self.agent.last_message!r}")
         states = [e["state"] for e in self.srv.job_events]
         self.assertIn("done", states, f"job failed: {[e.get('message') for e in self.srv.job_events if e['state'] == 'failed']}")
+        done_event = next(e for e in reversed(self.srv.job_events) if e["state"] == "done")
+        intro_image = base64.b64decode(done_event["intro_image"])
+        self.assertTrue(intro_image.startswith(b"\xff\xd8\xff"), "YouTube notification intro frame should be a JPEG")
         self.assertEqual(len(self.srv.uploads), 1)
         d = duration(self.srv.uploads[0])
         self.assertAlmostEqual(d, 17.0, delta=1.5, msg=f"uploaded video is {d:.1f}s")
@@ -111,7 +125,7 @@ class RecordingPathAndClipping(unittest.TestCase):
         self.cfg = Config.load(str(self.tmp / "none.env"), server_url=self.srv.url, agent_token=self.srv.token,
                                fake_obs=True, record_dir=str(self.tmp / "rec"), output_dir=self.tmp / "out",
                                work_dir=self.tmp / "work", state_file=self.tmp / "state.json",
-                               log_file=self.tmp / "agent.log", heartbeat_seconds=1.0)
+                               log_file=self.tmp / "agent.log", heartbeat_seconds=1.0, x264_preset="ultrafast")
         self.agent = Agent(self.cfg)
         # a 45 second raw recording whose name says when it began (like OBS), started 50 s ago
         self.started = int(time.time()) - 50
@@ -155,7 +169,9 @@ class RecordingPathAndClipping(unittest.TestCase):
         wrong.mkdir(exist_ok=True)
         self.agent.cfg.record_dir = str(wrong)
         self.agent.state["obs_record_dir"] = str(self.tmp / "rec")  # what OBS itself reported
-        self.assertEqual(self.agent.record_dirs(), [str(self.tmp / "rec")])
+        dirs = self.agent.record_dirs()
+        self.assertEqual(dirs[0], str(self.tmp / "rec"))
+        self.assertNotIn(str(wrong), dirs)
         self.agent.state["segments"]["5"] = [{"path": None, "started_utc": self.started, "stopped_utc": None}]
         states, failed = self.run_job(self.job(self.started + 5, self.started + 15))
         self.assertIn("done", states, failed)

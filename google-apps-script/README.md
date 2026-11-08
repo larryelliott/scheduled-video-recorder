@@ -43,7 +43,7 @@ YOUTUBE_PLAYLIST_ID=your_playlist_id
 YOUTUBE_PUBLISH_TIMEOUT=120
 ```
 
-Get the playlist ID from the playlist URL (the value of its `list` parameter). Keep `.env` private and do not commit it. The video manager sends a JSON POST with:
+Get the playlist ID from the playlist URL (the value of its `list` parameter). Keep `.env` private and do not commit it. The video manager automatically sends a JSON POST after a non-test video finishes processing and is stored on the server:
 
 | Field | Meaning |
 |---|---|

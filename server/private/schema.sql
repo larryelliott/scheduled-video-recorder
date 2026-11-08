@@ -109,6 +109,15 @@ CREATE TABLE IF NOT EXISTS youtube_publications (
   PRIMARY KEY (service_id, file_name)
 );
 
+CREATE TABLE IF NOT EXISTS notification_images (
+  service_id  INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
+  image_data  TEXT NOT NULL,
+  public_token TEXT NOT NULL UNIQUE,
+  created_utc INTEGER NOT NULL,
+  PRIMARY KEY (service_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS agent_files (   -- latest inventory reported by winpc
   name      TEXT NOT NULL,
   kind      TEXT NOT NULL,                -- raw|final|file

@@ -137,6 +137,7 @@ final class Files
     {
         $removed = [];
         $now = Clock::now();
+        NotificationImages::cleanup();
         foreach (Db::all('SELECT * FROM files') as $f) {
             if (self::expiresAt((int)$f['created_utc']) > $now || self::isPinned($f['name'])) {
                 continue;

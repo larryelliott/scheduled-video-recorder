@@ -41,20 +41,24 @@ Response:
 ### `POST /api/agent/recording`
 ```json
 {"service_id": 12, "event": "started|stopped|failed", "ts_utc": 1793028001, "video_started_utc": 1793028001,
- "video_file": "2026-11-01 10-20-01.mp4", "message": "only for failed"}
+ "video_file": "2026-11-01 10-20-01.mp4", "recording_image": "optional base64 JPEG", "message": "only for failed"}
 ```
-`started` is idempotent. `stopped` marks the service as recorded. `failed` sends an error notification.
+`started` is idempotent. It can include a small JPEG frame captured from the active recording. `stopped` marks the service as recorded. `failed` sends an error notification.
 
 ### `POST /api/agent/job`
 ```json
 {"service_id": 12, "state": "running|failed|done", "message": "trimming", "progress": 40}
 ```
-`running` updates progress, `failed` notifies, `done` requires the upload to have arrived and marks the video ready.
+`running` updates progress and sends the processing-started notification once per attempt. A `done` request may include an `intro_image` field containing a small base64 JPEG. `done` requires the upload to have arrived, marks the video ready, and automatically publishes it to YouTube when publishing is configured (test videos are never published). The response can take as long as the configured YouTube publishing timeout.
 A job stuck in `running` for 10 minutes with the agent no longer reporting it is retried, up to 3 attempts.
 
 ### `PUT /api/agent/upload?service_id=12&name=All-Saints-Day.mp4`
 Raw video bytes as the body (no multipart). The server checks the byte count against `Content-Length`.
 Response: `{"ok": true, "size": 398123456, "file_id": 5}`
+
+## Notification images
+
+The agent sends optional JPEG previews with the authenticated recording/job events above. The server serves stored previews to email and ntfy through unguessable links at `/notification-image/{service_id}/{kind}/{token}`. Only `recording_started` and `youtube_published` images are accepted; links expire with file retention. Missing or invalid previews do not prevent recording, processing, or publishing.
 
 ## Browser (signed-in users)
 

@@ -22,7 +22,7 @@ foreach ($candidates as $c) {
 }
 if ($private === null) {
     http_response_code(500);
-    echo 'Server files not found. See docs/INSTALL.md, step "Upload the private folder".';
+    echo 'Server files not found. See docs/INSTALL.md for the Git checkout or SFTP layout.';
     exit;
 }
 define('APP_DIR', $private);
