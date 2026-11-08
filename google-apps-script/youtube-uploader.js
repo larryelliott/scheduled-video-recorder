@@ -17,7 +17,7 @@ function doPost(e) {
     }
     
     // 1. Call your upload function to post to YouTube
-    var videoId = upload(url, title, description, topics, privacyStatus);
+    var videoId = upload(url, title, description, topics, privacyStatus, data.expectedBytes, data.fileName);
     
     // 2. Add the video to your specified playlist
     if (playlistId !== "") {
@@ -40,8 +40,21 @@ function doPost(e) {
 }
 
 // Core upload function (returns the new video's ID)
-function upload(url, title, description, topics, privacyStatus) {
-  var videoData = UrlFetchApp.fetch(url); 
+function upload(url, title, description, topics, privacyStatus, expectedBytes, fileName) {
+  var source = UrlFetchApp.fetch(url, {muteHttpExceptions: true});
+  if (source.getResponseCode() !== 200) {
+    throw new Error("Video download returned HTTP " + source.getResponseCode() + ".");
+  }
+  var videoData = source.getBlob()
+    .setName(fileName || "video.mp4")
+    .setContentType("video/mp4");
+  var actualBytes = videoData.getBytes().length;
+  var headers = source.getHeaders();
+  var contentLength = headerValue(headers, "Content-Length");
+  var requiredBytes = Number(expectedBytes || contentLength || 0);
+  if (requiredBytes > 0 && actualBytes !== requiredBytes) {
+    throw new Error("Video download was incomplete: expected " + requiredBytes + " bytes, received " + actualBytes + ".");
+  }
   
   var resource = { 
     snippet: { 
@@ -54,8 +67,18 @@ function upload(url, title, description, topics, privacyStatus) {
     } 
   };
   
-  var response = YouTube.Videos.insert(resource, "snippet,status", videoData); 
+  var response = YouTube.Videos.insert(resource, "snippet,status", videoData);
   return response.id; 
+}
+
+function headerValue(headers, name) {
+  var target = name.toLowerCase();
+  for (var key in headers) {
+    if (key.toLowerCase() === target) {
+      return headers[key];
+    }
+  }
+  return "";
 }
 
 // Function to add a video to a specific playlist
@@ -78,6 +101,7 @@ function testDoPost() {
   // 1. Simulate the payload format that your PHP cURL script sends
   var mockPayload = {
     "url": "URL_TO_YOUR_VIDEO_FILE", // Replace with an actual video URL for real testing
+    "fileName": "test-video.mp4",
     "title": "doPost API Test Sermon 2",
     "description": "Testing the PHP entry point function directly within the editor.",
     "topics": ["API Test", "doPost"],
