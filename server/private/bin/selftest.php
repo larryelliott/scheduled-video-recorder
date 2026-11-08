@@ -135,6 +135,33 @@ check('magic link signs the right person in', $u !== null && $u['name'] === 'Lar
 check('link url uses BASE_URL', strpos(Auth::linkUrl($tok), 'https://example.test/vm/m/') === 0);
 Auth::revokeLink((int)$u['link_id']);
 check('revoked link stops working', Auth::redeem($tok) === null);
+$adminSettings = Pages::settings();
+check('admin settings hide database editor behind caution disclosure',
+    strpos($adminSettings, '<details class="card"><summary>Advanced database tools (use with caution)') !== false
+    && strpos($adminSettings, '/settings/database') !== false);
+check('database editor excludes authentication and private file tables',
+    !DatabaseAdmin::hasTable('users') && !DatabaseAdmin::hasTable('sessions')
+    && !DatabaseAdmin::hasTable('links') && !DatabaseAdmin::hasTable('files')
+    && !DatabaseAdmin::hasTable('notification_images'));
+DatabaseAdmin::save('settings', null, ['k' => 'database-admin-selftest', 'v' => '<img>']);
+$dbAdminKey = ['k' => 'database-admin-selftest'];
+$encodedDbAdminKey = DatabaseAdmin::encodeKey('settings', ['k' => 'database-admin-selftest']);
+$decodedDbAdminKey = DatabaseAdmin::decodeKey($encodedDbAdminKey, 'settings');
+check('database editor inserts rows and safely encodes row keys',
+    DatabaseAdmin::row('settings', $decodedDbAdminKey)['v'] === '<img>'
+    && $decodedDbAdminKey === $dbAdminKey
+    && strpos(Pages::databaseTable('settings'), '&lt;img&gt;') !== false);
+DatabaseAdmin::save('settings', $dbAdminKey, ['v' => 'updated']);
+check('database editor updates rows', DatabaseAdmin::row('settings', $dbAdminKey)['v'] === 'updated');
+DatabaseAdmin::delete('settings', $dbAdminKey);
+check('database editor deletes rows', DatabaseAdmin::row('settings', $dbAdminKey) === null);
+$blockedTable = false;
+try {
+    DatabaseAdmin::columns('sessions');
+} catch (InvalidArgumentException $e) {
+    $blockedTable = true;
+}
+check('database editor refuses non-allowlisted tables', $blockedTable);
 $sent = [];
 $imageCalls = [];
 Notify::$transport = function ($ch, $user, $title, $body, $url, $imageUrl = null) use (&$sent, &$imageCalls) {

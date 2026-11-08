@@ -145,6 +145,38 @@ final class App
         } elseif ($path === '/files') {
             [$fm, $ft] = Flash::take();
             self::html(Pages::files($fm, $ft));
+        } elseif ($path === '/settings/database') {
+            if (!Auth::isAdmin()) {
+                http_response_code(403);
+                self::html(View::layout('Not allowed', '<section class="card"><h1>Admin access required</h1></section>', 'settings'));
+                return;
+            }
+            self::html(Pages::database());
+        } elseif (preg_match('#^/settings/database/([a-z_]+)$#', $path, $m)) {
+            if (!Auth::isAdmin()) {
+                http_response_code(403);
+                self::html(View::layout('Not allowed', '<section class="card"><h1>Admin access required</h1></section>', 'settings'));
+                return;
+            }
+            if (!DatabaseAdmin::hasTable($m[1])) {
+                http_response_code(404);
+                self::html(View::layout('Not found', '<section class="card"><h1>Table not available</h1></section>', 'settings'));
+                return;
+            }
+            self::html(Pages::databaseTable($m[1]));
+        } elseif (preg_match('#^/settings/database/([a-z_]+)/(new|edit)$#', $path, $m)) {
+            if (!Auth::isAdmin()) {
+                http_response_code(403);
+                self::html(View::layout('Not allowed', '<section class="card"><h1>Admin access required</h1></section>', 'settings'));
+                return;
+            }
+            if (!DatabaseAdmin::hasTable($m[1])) {
+                http_response_code(404);
+                self::html(View::layout('Not found', '<section class="card"><h1>Table not available</h1></section>', 'settings'));
+                return;
+            }
+            $key = $m[2] === 'edit' ? DatabaseAdmin::decodeKey((string)($_GET['key'] ?? ''), $m[1]) : null;
+            self::html(Pages::databaseForm($m[1], $key));
         } elseif ($path === '/settings') {
             [$fm, $ft] = Flash::take();
             self::html(Pages::settings($fm, '', $ft));
@@ -305,6 +337,26 @@ final class App
         if ($admin && $path === '/admin/revoke') {
             Auth::revokeLink((int)($_POST['link_id'] ?? 0));
             self::back('/settings', 'Link turned off.');
+        }
+        if (preg_match('#^/settings/database/([a-z_]+)/(save|delete)$#', $path, $m)) {
+            if (!$admin) {
+                http_response_code(403);
+                self::html(View::layout('Not allowed', '<section class="card"><h1>Admin access required</h1></section>', 'settings'));
+                return;
+            }
+            $table = $m[1];
+            try {
+                if ($m[2] === 'delete') {
+                    DatabaseAdmin::delete($table, DatabaseAdmin::decodeKey((string)($_POST['_key'] ?? ''), $table));
+                    self::back('/settings/database/' . rawurlencode($table), 'Row deleted.');
+                }
+                $isNew = ($_POST['_new'] ?? '') === '1';
+                $key = $isNew ? null : DatabaseAdmin::decodeKey((string)($_POST['_key'] ?? ''), $table);
+                DatabaseAdmin::save($table, $key, $_POST);
+                self::back('/settings/database/' . rawurlencode($table), $isNew ? 'Row added.' : 'Row saved.');
+            } catch (Throwable $e) {
+                self::back('/settings/database/' . rawurlencode($table), 'Could not save this row: ' . $e->getMessage(), 'bad');
+            }
         }
         http_response_code(404);
         self::html(View::layout('Not found', '<section class="card"><h1>Not allowed or not found</h1></section>'));

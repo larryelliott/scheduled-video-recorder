@@ -379,8 +379,96 @@ final class Pages
             $ok = (int)Db::setting('schedule_ok_utc', '0');
             $body .= '<section class="card"><h2>System</h2><p>Schedule last read ' . h($ok ? ago($ok) : 'never') . '.' . ($sched !== '' ? ' <span class="bad-text">' . h($sched) . '</span>' : '') . '</p>'
                 . (Db::setting('mail_error', '') !== '' ? '<p>Last email problem: <span class="bad-text">' . h(Db::setting('mail_error', '')) . '</span></p>' : '') . '</section>';
+            $body .= '<details class="card"><summary>Advanced database tools (use with caution)</summary>'
+                . '<p>Direct row edits can affect recordings, processing, notifications, and publishing. Authentication, device, file-path, and private-image tables are intentionally excluded.</p>'
+                . '<p><a class="btn small" href="' . $b . '/settings/database">Open database editor</a></p></details>';
         }
         $body .= '<section class="card">' . View::post('/logout', 'Sign out on this device', 'btn') . '</section>';
         return View::layout('Settings', $body, 'settings');
+    }
+
+    public static function database(): string
+    {
+        $b = h(base_path());
+        $body = '<p><a href="' . $b . '/settings">Back to Settings</a></p><h1>Database editor</h1>'
+            . '<section class="card"><p><strong>Use with caution.</strong> Changes take effect immediately and can disrupt normal operation. '
+            . 'Authentication, device, file-path, and private-image tables are excluded.</p><ul class="list">';
+        foreach (DatabaseAdmin::tables() as $table) {
+            $body .= '<li><a href="' . $b . '/settings/database/' . h($table) . '">' . h($table) . '</a></li>';
+        }
+        $body .= '</ul></section>';
+        return View::layout('Database editor', $body, 'settings');
+    }
+
+    public static function databaseTable(string $table): string
+    {
+        $b = h(base_path());
+        $columns = DatabaseAdmin::columns($table);
+        $rows = DatabaseAdmin::rows($table);
+        $body = '<p><a href="' . $b . '/settings/database">Database tables</a></p><h1>' . h($table) . '</h1>'
+            . '<p class="actions"><a class="btn" href="' . $b . '/settings/database/' . h($table) . '/new">Add row</a></p>'
+            . '<section class="card"><p class="muted">Showing up to 100 rows. Values are escaped for display.</p><div class="tablewrap"><table><thead><tr>';
+        foreach ($columns as $col) {
+            $body .= '<th>' . h((string)$col['name']) . '</th>';
+        }
+        $body .= '<th>Actions</th></tr></thead><tbody>';
+        foreach ($rows as $row) {
+            $body .= '<tr>';
+            foreach ($columns as $col) {
+                $value = $row[$col['name']] === null ? 'NULL' : (string)$row[$col['name']];
+                if (strlen($value) > 160) {
+                    $value = substr($value, 0, 157) . '...';
+                }
+                $body .= '<td>' . h($value) . '</td>';
+            }
+            $encoded = DatabaseAdmin::encodeKey($table, $row);
+            $body .= '<td><div class="actions"><a class="btn small" href="' . $b . '/settings/database/' . h($table)
+                . '/edit?key=' . rawurlencode($encoded) . '">Edit</a>'
+                . View::post('/settings/database/' . $table . '/delete', 'Delete', 'btn small danger',
+                    'Permanently delete this row?', ['_key' => $encoded]) . '</div></td></tr>';
+        }
+        if ($rows === []) {
+            $body .= '<tr><td colspan="' . (count($columns) + 1) . '" class="muted">No rows.</td></tr>';
+        }
+        $body .= '</tbody></table></div></section>';
+        return View::layout('Database: ' . $table, $body, 'settings');
+    }
+
+    public static function databaseForm(string $table, ?array $key): string
+    {
+        $b = h(base_path());
+        $row = $key === null ? [] : DatabaseAdmin::row($table, $key);
+        if ($key !== null && $row === null) {
+            http_response_code(404);
+            return View::layout('Not found', '<section class="card"><h1>Row not found</h1></section>', 'settings');
+        }
+        $keys = DatabaseAdmin::primaryKeys($table);
+        $action = $b . '/settings/database/' . h($table) . '/save';
+        $body = '<p><a href="' . $b . '/settings/database/' . h($table) . '">Back to ' . h($table) . '</a></p>'
+            . '<h1>' . ($key === null ? 'Add row to ' : 'Edit row in ') . h($table) . '</h1>'
+            . '<section class="card"><form method="post" action="' . $action . '" class="form">' . View::csrf()
+            . ($key === null ? '<input type="hidden" name="_new" value="1">' : '<input type="hidden" name="_key" value="' . h(DatabaseAdmin::encodeKey($table, $row)) . '">');
+        foreach (DatabaseAdmin::columns($table) as $col) {
+            $name = (string)$col['name'];
+            $type = strtoupper((string)$col['type']);
+            if ($key === null && count($keys) === 1 && $name === $keys[0] && $type === 'INTEGER') {
+                continue;
+            }
+            $value = $row[$name] ?? '';
+            $label = h($name . (in_array($name, $keys, true) ? ' (primary key)' : ''));
+            if (in_array($name, $keys, true) && $key !== null) {
+                $body .= '<label>' . $label . '<input value="' . h((string)$value) . '" disabled></label>';
+                continue;
+            }
+            $inputType = strpos($type, 'INT') !== false ? 'number' : (preg_match('/REAL|FLOA|DOUB|NUM/', $type) ? 'number' : 'text');
+            $step = $inputType === 'number' && $type !== 'INTEGER' ? ' step="any"' : '';
+            if (strlen((string)$value) > 100 || strpos($type, 'TEXT') !== false) {
+                $body .= '<label>' . $label . '<textarea name="' . h($name) . '" rows="3">' . h((string)$value) . '</textarea></label>';
+            } else {
+                $body .= '<label>' . $label . '<input type="' . $inputType . '"' . $step . ' name="' . h($name) . '" value="' . h((string)$value) . '"></label>';
+            }
+        }
+        $body .= '<button class="btn primary">Save</button></form></section>';
+        return View::layout('Database: ' . $table, $body, 'settings');
     }
 }
