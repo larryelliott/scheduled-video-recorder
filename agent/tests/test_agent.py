@@ -149,6 +149,17 @@ class RecordingPathAndClipping(unittest.TestCase):
         self.assertIn("done", states, failed)
         self.assertAlmostEqual(duration(self.srv.uploads[0]), 23.0, delta=1.5)  # 20 s kept + 3 s intro
 
+    def test_wrong_record_dir_in_env_does_not_hide_the_recording(self):
+        """The failing Sunday: RECORD_DIR pointed at the finished-video folder while OBS saved elsewhere."""
+        wrong = self.tmp / "out"
+        wrong.mkdir(exist_ok=True)
+        self.agent.cfg.record_dir = str(wrong)
+        self.agent.state["obs_record_dir"] = str(self.tmp / "rec")  # what OBS itself reported
+        self.assertEqual(self.agent.record_dirs(), [str(self.tmp / "rec")])
+        self.agent.state["segments"]["5"] = [{"path": None, "started_utc": self.started, "stopped_utc": None}]
+        states, failed = self.run_job(self.job(self.started + 5, self.started + 15))
+        self.assertIn("done", states, failed)
+
     def test_message_names_the_recordings_it_has(self):
         self.agent.state["segments"]["5"] = [{"path": str(self.raw), "started_utc": self.started, "stopped_utc": self.started + 30}]
         states, failed = self.run_job(self.job(self.started + 3600, self.started + 3700))
@@ -166,10 +177,31 @@ class Units(unittest.TestCase):
                 p = tmp / name
                 p.write_bytes(b"x")
                 os.utime(p, (now - age_days * 86400,) * 2)
-            removed = cleanup.delete_expired([(str(tmp), "raw")], 14, {"pinned.mp4"}, {str((tmp / "live.mp4").resolve())}, now)
+            removed = cleanup.delete_expired([(str(tmp), "final")], 14, {"pinned.mp4"}, {str((tmp / "live.mp4").resolve())}, now)
             self.assertEqual(removed, ["old.mp4"])
-            inv = {f["name"] for f in cleanup.inventory([(str(tmp), "raw")])}
+            inv = {f["name"] for f in cleanup.inventory([(str(tmp), "final")])}
             self.assertEqual(inv, {"new.mp4", "pinned.mp4", "live.mp4"})
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_raw_folder_only_touches_obs_named_or_recorded_files(self):
+        """A shared Videos folder must not lose unrelated videos."""
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            now = time.time()
+            names = ["2026-01-04 10-20-01.mp4", "Family holiday.mp4", "2026-01-11 10-20-05.mp4"]
+            for name in names:
+                p = tmp / name
+                p.write_bytes(b"x")
+                os.utime(p, (now - 30 * 86400,) * 2)
+            known = {cleanup.norm(str(tmp / "Family holiday.mp4"))}  # pretend the agent recorded this one itself
+            inv = {f["name"] for f in cleanup.inventory([(str(tmp), "raw")])}
+            self.assertEqual(inv, {"2026-01-04 10-20-01.mp4", "2026-01-11 10-20-05.mp4"})
+            removed = cleanup.delete_expired([(str(tmp), "raw")], 14, set(), set(), now)
+            self.assertEqual(sorted(removed), ["2026-01-04 10-20-01.mp4", "2026-01-11 10-20-05.mp4"])
+            self.assertTrue((tmp / "Family holiday.mp4").exists())
+            removed = cleanup.delete_expired([(str(tmp), "raw")], 14, set(), set(), now, known_raw=known)
+            self.assertEqual(removed, ["Family holiday.mp4"])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

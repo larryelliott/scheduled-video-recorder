@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import threading
 import time
@@ -10,7 +11,7 @@ from typing import Optional
 
 from . import __version__, cleanup, media
 from .api import Server
-from .obs import default_videos_dir, make_obs, newest_video, parse_obs_name, video_near
+from .obs import default_videos_dir, make_obs, newest_video, parse_obs_name, video_near_any
 from .state import State
 
 log = logging.getLogger("svagent")
@@ -36,14 +37,29 @@ class Agent:
         self.start_failures: dict[int, int] = {}
         self.last_start_attempt = 0.0
         self.last_cleanup = 0.0
+        self.last_dir_check = 0.0
         self.lock = threading.Lock()
 
     # ------------------------------------------------------------------ helpers
+    def record_dirs(self) -> list[str]:
+        """Folders where raw recordings may be: what OBS reports first, then RECORD_DIR, then the Videos folder.
+        The finished-video folder is never treated as a raw folder."""
+        out: list[str] = []
+        final = cleanup.norm(str(self.cfg.output_dir))
+        for d in (self.state.get("obs_record_dir"), self.cfg.record_dir, self.state.get("record_dir"), default_videos_dir()):
+            if d and os.path.isdir(d) and cleanup.norm(d) != final and cleanup.norm(d) not in [cleanup.norm(x) for x in out]:
+                out.append(d)
+        return out
+
     def record_dir(self) -> str:
-        return self.cfg.record_dir or self.state.get("record_dir") or default_videos_dir()
+        dirs = self.record_dirs()
+        return dirs[0] if dirs else ""
+
+    def known_raw(self) -> set[str]:
+        return {cleanup.norm(s["path"]) for segs in self.state["segments"].values() for s in segs if s.get("path")}
 
     def dirs(self) -> list[tuple[str, str]]:
-        return [(self.record_dir(), "raw"), (str(self.cfg.output_dir), "final")]
+        return [(d, "raw") for d in self.record_dirs()] + [(str(self.cfg.output_dir), "final")]
 
     def send_event(self, sid: int, event: str, **extra) -> None:
         payload = {"service_id": sid, "event": event, "ts_utc": int(self.server.now()), **extra}
@@ -83,7 +99,7 @@ class Agent:
             free = None
         return {"version": __version__, "state": st, "recording": recording, "obs_ok": self.last_obs_ok,
                 "disk_free_gb": free, "message": self.last_message, "busy_service_id": self.busy_sid,
-                "files": cleanup.inventory(self.dirs())}
+                "files": cleanup.inventory(self.dirs(), self.known_raw())}
 
     # ------------------------------------------------------------------ recording
     def _obs_recording(self) -> Optional[bool]:
@@ -93,8 +109,11 @@ class Agent:
             self.last_obs_ok = True
             if self.last_message.startswith("OBS:"):
                 self.last_message = ""
-            if not self.state["record_dir"]:
-                self.state["record_dir"] = self.obs.record_dir() or ""
+            if time.time() - self.last_dir_check > 300 or not self.state.get("obs_record_dir"):
+                self.last_dir_check = time.time()
+                found = self.obs.record_dir()
+                if found:
+                    self.state["obs_record_dir"] = found
             return rec
         except Exception as exc:
             self.last_obs_ok = False
@@ -147,7 +166,7 @@ class Agent:
             local_before = time.time()
             self.obs.start()
             started = self.server.now()
-            path = self.obs.wait_for_file(local_before)
+            path = self.obs.wait_for_file(local_before, self.record_dirs())
         except Exception as exc:
             n = self.start_failures[sid] = self.start_failures.get(sid, 0) + 1
             self.last_message = f"Could not start recording: {exc}"
@@ -163,8 +182,9 @@ class Agent:
             started = self.server.now() - self.obs.status()["duration_s"]
         except Exception:
             started = self.server.now()
-        directory = self.record_dir()
-        path = newest_video(directory, time.time() - 6 * 3600) if directory else None
+        found = [(newest_video(d, time.time() - 6 * 3600), d) for d in self.record_dirs()]
+        found = [p for p, _ in found if p]
+        path = max(found, key=os.path.getmtime) if found else None
         named = parse_obs_name(Path(path).name) if path else None
         if named is not None:  # the file name carries the exact start second
             started = named + self.server.offset
@@ -188,6 +208,7 @@ class Agent:
             return
         now = self.server.now()
         segs = self._segments(sid)
+        path = path or self.obs.last_output_path()
         if path and segs and not segs[-1].get("path"):
             segs[-1]["path"] = path
         self._close_segment(sid, now)
@@ -215,10 +236,10 @@ class Agent:
         p = seg.get("path")
         if p and Path(p).is_file():
             return p
-        directory = self.record_dir()
-        if not directory:
+        dirs = self.record_dirs()
+        if not dirs:
             return None
-        found = video_near(directory, seg["started_utc"] - self.server.offset)
+        found = video_near_any(dirs, seg["started_utc"] - self.server.offset)
         if found:
             seg["path"] = found
             self.state.save()
@@ -266,8 +287,9 @@ class Agent:
                 raise JobError(self.explain_no_segment(sid, cut_start, cut_end))
             path = self.resolve_path(seg)
             if not path or not Path(path).is_file():
-                raise JobError(f"The raw recording file could not be found (looked in {self.record_dir() or 'no folder'}). "
-                               "Set RECORD_DIR in the agent .env to the folder OBS records to.")
+                raise JobError("The raw recording file could not be found on the PC (looked in: "
+                               + (", ".join(self.record_dirs()) or "no folder") + "). In OBS, check Settings > Output > Recording Path, "
+                               "and remove RECORD_DIR from the agent .env unless it matches that folder.")
             self.send_job(sid, "running", "waiting for the recording to catch up", 0)
             while seg.get("stopped_utc") is None and self.server.now() < cut_end + 15 and not self.stop_event.is_set():
                 time.sleep(3)
@@ -277,8 +299,10 @@ class Agent:
             if start - cut_start > 1:
                 log.warning("Recording began %.0fs after the sermon started; clipping", start - cut_start)
             out = self.cfg.output_dir / job["output_name"]
+            venc = {"encoder": self.cfg.video_encoder, "preset": self.cfg.x264_preset, "crf": self.cfg.x264_crf,
+                    "extra": self.cfg.video_encoder_args}
             media.build_video(self.cfg.ffmpeg, self.cfg.ffprobe, path, start_offset, duration, job["intro"], out, work,
-                              lambda f, m: report(5 + f * 70, m))
+                              lambda f, m: report(5 + f * 70, m), venc, lambda: self.state["recording_sid"] is not None)
             if self.cfg.upload_after_trim:
                 self.send_job(sid, "running", "uploading to the web server", 80)
                 self.server.upload(sid, job["output_name"], str(out),
@@ -303,7 +327,8 @@ class Agent:
         self.last_cleanup = time.time()
         protect = {str(Path(s["path"]).resolve()) for segs in self.state["segments"].values() for s in segs
                    if s.get("path") and s.get("stopped_utc") is None}
-        removed = cleanup.delete_expired(self.dirs(), int(self.state["retention_days"]), set(self.state["pinned"]), protect)
+        removed = cleanup.delete_expired(self.dirs(), int(self.state["retention_days"]), set(self.state["pinned"]), protect,
+                                         known_raw=self.known_raw())
         if removed:
             log.info("Cleanup removed %d old file(s)", len(removed))
         # forget bookkeeping for services older than the retention period

@@ -4,7 +4,7 @@ final class Pages
 {
     private static function flash(string $msg, string $tone = 'ok'): string
     {
-        return $msg === '' ? '' : '<p class="flash ' . h($tone) . '" role="status">' . h($msg) . '</p>';
+        return $msg === '' ? '' : '<p class="flash ' . h($tone) . '" role="status" data-autoclose="' . ($tone === 'bad' ? 20000 : 8000) . '">' . h($msg) . '</p>';
     }
 
     private static function sheetLink(string $class = 'btn'): string
@@ -65,10 +65,10 @@ final class Pages
 
     // ---- dashboard -----------------------------------------------------------------------
 
-    public static function dashboard(string $msg = ''): string
+    public static function dashboard(string $msg = '', string $tone = 'ok'): string
     {
         $next = Schedule::next();
-        $body = self::flash($msg) . '<div id="status-wrap">' . View::statusCard() . '</div>';
+        $body = self::flash($msg, $tone) . '<div id="status-wrap">' . View::statusCard() . '</div>';
 
         if ($next !== null) {
             [$a, $b] = Schedule::window($next);
@@ -141,18 +141,12 @@ final class Pages
             http_response_code(404);
             return View::layout('Not found', '<section class="card"><h1>Service not found</h1></section>', 'services');
         }
-        $state = Services::state($s);
-        [$ra, $rb] = Schedule::window($s);
         $intro = Schedule::intro($s);
         $b = h(base_path());
         $body = '<p><a href="' . $b . '/services">Back to services</a></p>' . self::flash($msg, $tone)
-            . '<h1>' . h(Services::label($s)) . '</h1><p>' . View::badge($state) . ' ' . h(fmt_local((int)$s['start_utc'])) . '</p>'
-            . ((int)$s['auto_light'] === 1 ? '<p class="muted">Started automatically when the pulpit light turned on, because nothing was scheduled.</p>' : '')
-            . '<section class="card"><h2>Video</h2>' . self::fileButtons($id)
-            . ($s['job_state'] === 'failed' ? '<p class="flash bad">' . h($s['job_msg']) . '</p>' . View::post("/services/$id/retry", 'Try processing again', 'btn')
-               : (($s['cut_start_utc'] !== null && in_array($s['status'], ['recorded', 'ready'], true) && !in_array($s['job_state'], ['running', 'pending'], true))
-                   ? View::post("/services/$id/retry", 'Make the video again', 'btn', 'Make the video again with the current intro and sermon times?') : ''))
-            . '</section>';
+            . '<span data-live-url="' . $b . '/services/' . $id . '/live" hidden></span>'
+            . '<div id="svc-head">' . self::serviceHead($s) . '</div>'
+            . '<div id="svc-video">' . self::serviceVideo($s) . '</div>';
 
         // Intro editor with live preview.
         $body .= '<section class="card"><h2>Intro</h2>' . View::introPreview($intro)
@@ -166,20 +160,11 @@ final class Pages
             . ((int)$s['intro_edited'] === 1 && (int)$s['is_sheet'] === 1 ? '<p class="muted">Edited here, so changes to the Google Sheet will not overwrite this service.</p>' : '')
             . '</section>';
 
-        // Cut times.
+        // Cut times: the summary refreshes by itself; the form below does not (so typing is never interrupted).
         $cs = $s['cut_start_utc'] !== null ? (int)$s['cut_start_utc'] : null;
         $ce = $s['cut_end_utc'] !== null ? (int)$s['cut_end_utc'] : null;
-        $body .= '<section class="card"><h2>Sermon start and end</h2>';
-        if ($cs !== null && $ce !== null) {
-            $body .= '<p>' . h(fmt_local($cs, 'g:i:s A')) . ' to ' . h(fmt_local($ce, 'g:i:s A')) . ', ' . h(fmt_duration($ce - $cs)) . ' long. '
-                . ($s['cut_source'] === 'manual' ? 'Set by hand.' : ($s['cut_source'] === 'test' ? 'Test cut.' : 'Found from the pulpit light.')) . '</p>';
-        } else {
-            $body .= '<p>Not known yet.</p>';
-        }
-        if ($s['cut_note'] !== '') {
-            $body .= '<p class="muted">' . h($s['cut_note']) . '</p>';
-        }
-        $body .= '<form method="post" action="' . $b . '/services/' . $id . '/cuts" class="form two">' . View::csrf()
+        $body .= '<section class="card"><h2>Sermon start and end</h2><div id="svc-cut">' . self::serviceCut($s) . '</div>'
+            . '<form method="post" action="' . $b . '/services/' . $id . '/cuts" class="form two">' . View::csrf()
             . '<label>Start<input type="time" step="1" name="start" value="' . ($cs !== null ? h(fmt_local($cs, 'H:i:s')) : '') . '" required></label>'
             . '<label>End<input type="time" step="1" name="end" value="' . ($ce !== null ? h(fmt_local($ce, 'H:i:s')) : '') . '" required></label>'
             . '<button class="btn">Use these times and process</button></form>'
@@ -196,7 +181,65 @@ final class Pages
         }
         $body .= '<details><summary>Light sensor readings (' . count($ev) . ')</summary><ul class="events">' . ($evHtml ?: '<li>No readings in the window.</li>') . '</ul></details></section>';
 
-        // Recording window / skip.
+        $body .= '<div id="svc-rec">' . self::serviceRec($s) . '</div>';
+        return View::layout(Services::label($s), $body, 'services');
+    }
+
+    /** The parts of a service page that change while it is open. Polled every 10 seconds by app.js. */
+    public static function serviceLive(int $id): ?array
+    {
+        $s = Services::get($id);
+        if ($s === null) {
+            return null;
+        }
+        return ['head' => self::serviceHead($s), 'video' => self::serviceVideo($s), 'cut' => self::serviceCut($s), 'rec' => self::serviceRec($s)];
+    }
+
+    private static function serviceHead(array $s): string
+    {
+        return '<h1>' . h(Services::label($s)) . '</h1><p>' . View::badge(Services::state($s)) . ' ' . h(fmt_local((int)$s['start_utc'])) . '</p>'
+            . ((int)$s['auto_light'] === 1 ? '<p class="muted">Started automatically when the pulpit light turned on, because nothing was scheduled.</p>' : '');
+    }
+
+    private static function serviceVideo(array $s): string
+    {
+        $id = (int)$s['id'];
+        $progress = '';
+        if ($s['job_state'] === 'running') {
+            $pct = max(0, min(100, (int)$s['job_progress']));
+            $progress = '<p>Making the video: ' . $pct . '%' . ($s['job_msg'] !== '' ? ', ' . h($s['job_msg']) : '') . '</p>'
+                . '<div class="bar" role="progressbar" aria-valuenow="' . $pct . '" aria-valuemin="0" aria-valuemax="100"><span style="width:' . $pct . '%"></span></div>';
+        } elseif ($s['job_state'] === 'pending') {
+            $progress = '<p class="muted">Waiting for the Windows PC to pick this up.</p>';
+        }
+        return '<section class="card"><h2>Video</h2>' . $progress . self::fileButtons($id)
+            . ($s['job_state'] === 'failed' ? '<p class="flash bad">' . h($s['job_msg']) . '</p>' . View::post("/services/$id/retry", 'Try processing again', 'btn')
+               : (($s['cut_start_utc'] !== null && in_array($s['status'], ['recorded', 'ready'], true) && !in_array($s['job_state'], ['running', 'pending'], true))
+                   ? View::post("/services/$id/retry", 'Make the video again', 'btn', 'Make the video again with the current intro and sermon times?') : ''))
+            . '</section>';
+    }
+
+    private static function serviceCut(array $s): string
+    {
+        $cs = $s['cut_start_utc'] !== null ? (int)$s['cut_start_utc'] : null;
+        $ce = $s['cut_end_utc'] !== null ? (int)$s['cut_end_utc'] : null;
+        $out = '';
+        if ($cs !== null && $ce !== null) {
+            $out .= '<p>' . h(fmt_local($cs, 'g:i:s A')) . ' to ' . h(fmt_local($ce, 'g:i:s A')) . ', ' . h(fmt_duration($ce - $cs)) . ' long. '
+                . ($s['cut_source'] === 'manual' ? 'Set by hand.' : ($s['cut_source'] === 'test' ? 'Test cut.' : 'Found from the pulpit light.')) . '</p>';
+        } else {
+            $out .= '<p>Not known yet.</p>';
+        }
+        if ($s['cut_note'] !== '') {
+            $out .= '<p class="muted">' . h($s['cut_note']) . '</p>';
+        }
+        return $out;
+    }
+
+    private static function serviceRec(array $s): string
+    {
+        $id = (int)$s['id'];
+        [$ra, $rb] = Schedule::window($s);
         $vs = $s['video_started_utc'] !== null ? (int)$s['video_started_utc'] : null;
         $vend = $s['recording_stopped_utc'] !== null ? (int)$s['recording_stopped_utc'] : null;
         if ($vs !== null) {
@@ -205,20 +248,19 @@ final class Pages
         } else {
             $actual = '<p class="muted">Not recorded yet.</p>';
         }
-        $body .= '<section class="card"><h2>Recording</h2>' . $actual . '<p class="muted">Planned window ' . h(fmt_local($ra, 'g:i:s A')) . ' to ' . h(fmt_local($rb, 'g:i:s A')) . '.</p><div class="actions">'
+        return '<section class="card"><h2>Recording</h2>' . $actual . '<p class="muted">Planned window ' . h(fmt_local($ra, 'g:i:s A')) . ' to ' . h(fmt_local($rb, 'g:i:s A')) . '.</p><div class="actions">'
             . ((int)$s['skip'] === 1 ? View::post("/services/$id/unskip", 'Record this service again', 'btn')
                : ($s['status'] === 'scheduled' ? View::post("/services/$id/skip", 'Skip this service', 'btn', 'Skip recording this service?') : ''))
             . '</div></section>';
-        return View::layout(Services::label($s), $body, 'services');
     }
 
     // ---- files ---------------------------------------------------------------------------
 
-    public static function files(string $msg = ''): string
+    public static function files(string $msg = '', string $tone = 'ok'): string
     {
         $pins = array_flip(Files::pinnedNames());
         $days = Files::retentionDays();
-        $body = '<h1>Files</h1>' . self::flash($msg) . '<p class="muted">Everything is deleted automatically after ' . $days . ' days unless you keep it.</p>';
+        $body = '<h1>Files</h1>' . self::flash($msg, $tone) . '<p class="muted">Everything is deleted automatically after ' . $days . ' days unless you keep it.</p>';
 
         $srv = '';
         foreach (Files::allServerFiles() as $f) {

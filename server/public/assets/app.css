@@ -55,7 +55,8 @@ input[type=checkbox] { width: 1.4rem; min-height: 0; height: 1.4rem; accent-colo
 
 .badge { display: inline-block; padding: .1rem .6rem; border-radius: 99px; font-size: .85rem; font-weight: 600; border: 1px solid currentColor; white-space: nowrap; }
 .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); } .badge.rec { color: var(--rec); } .badge.muted { color: var(--muted); }
-.flash { padding: .7rem .9rem; border-radius: 10px; border: 1px solid var(--ok); color: var(--ok); } .flash.bad { border-color: var(--bad); color: var(--bad); }
+.flash { padding: .7rem .9rem; border-radius: 10px; border: 1px solid var(--ok); color: var(--ok); transition: opacity .4s; cursor: pointer; } .flash.bad { border-color: var(--bad); color: var(--bad); } .flash.hide { opacity: 0; }
+.bar { height: .6rem; border-radius: 99px; background: var(--line); overflow: hidden; margin: 0 0 .8rem; } .bar > span { display: block; height: 100%; background: var(--accent); transition: width .6s; }
 .linkbox { word-break: break-all; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; padding: .7rem; border: 1px dashed var(--line); border-radius: 10px; user-select: all; }
 
 .list { list-style: none; margin: 0; padding: 0; }

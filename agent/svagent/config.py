@@ -42,6 +42,10 @@ class Config:
     ffprobe: str
     heartbeat_seconds: float
     upload_after_trim: bool
+    video_encoder: str
+    x264_preset: str
+    x264_crf: str
+    video_encoder_args: str
 
     @staticmethod
     def load(env_file: str | None = None, **overrides) -> "Config":
@@ -71,6 +75,10 @@ class Config:
             ffprobe=get("FFPROBE", "ffprobe"),
             heartbeat_seconds=float(get("HEARTBEAT_SECONDS", "20")),
             upload_after_trim=get("UPLOAD_TO_SERVER", "1") not in ("0", "false", "no"),
+            video_encoder=get("VIDEO_ENCODER", "libx264"),
+            x264_preset=get("X264_PRESET", "veryfast"),
+            x264_crf=get("X264_CRF", "23"),
+            video_encoder_args=get("VIDEO_ENCODER_ARGS"),
         )
         for k, v in overrides.items():
             setattr(cfg, k, v)

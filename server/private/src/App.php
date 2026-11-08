@@ -99,17 +99,24 @@ final class App
         }
 
         if ($path === '/') {
-            self::html(Pages::dashboard((string)($_GET['m'] ?? '')));
+            [$fm, $ft] = Flash::take();
+            self::html(Pages::dashboard($fm, $ft));
         } elseif ($path === '/api/status-card') {
             self::html(View::statusCard());
         } elseif ($path === '/services') {
             self::html(Pages::services());
+        } elseif (preg_match('#^/services/(\d+)/live$#', $path, $m)) {
+            $live = Pages::serviceLive((int)$m[1]);
+            json_out($live ?? ['error' => 'not found'], $live === null ? 404 : 200);
         } elseif (preg_match('#^/services/(\d+)$#', $path, $m)) {
-            self::html(Pages::service((int)$m[1], (string)($_GET['m'] ?? ''), (string)($_GET['t'] ?? 'ok')));
+            [$fm, $ft] = Flash::take();
+            self::html(Pages::service((int)$m[1], $fm, $ft));
         } elseif ($path === '/files') {
-            self::html(Pages::files((string)($_GET['m'] ?? '')));
+            [$fm, $ft] = Flash::take();
+            self::html(Pages::files($fm, $ft));
         } elseif ($path === '/settings') {
-            self::html(Pages::settings((string)($_GET['m'] ?? ''), '', (string)($_GET['t'] ?? 'ok')));
+            [$fm, $ft] = Flash::take();
+            self::html(Pages::settings($fm, '', $ft));
         } elseif (preg_match('#^/download/(\d+)$#', $path, $m)) {
             $f = Db::one('SELECT * FROM files WHERE id = ?', [(int)$m[1]]);
             if ($f === null) {
@@ -131,9 +138,11 @@ final class App
         }
     }
 
+    /** Redirect after a form post. The notice travels in a one-time cookie, never in the address. */
     private static function back(string $path, string $msg, string $tone = 'ok'): void
     {
-        redirect($path . '?m=' . rawurlencode($msg) . '&t=' . $tone);
+        Flash::set($msg, $tone);
+        redirect($path);
     }
 
     /** Form posts from signed-in users. */

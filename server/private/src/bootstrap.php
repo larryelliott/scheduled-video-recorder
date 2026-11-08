@@ -9,6 +9,7 @@ Env::load(APP_DIR . '/.env');
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/Db.php';
 require_once __DIR__ . '/Auth.php';
+require_once __DIR__ . '/Flash.php';
 require_once __DIR__ . '/Mailer.php';
 require_once __DIR__ . '/Notify.php';
 require_once __DIR__ . '/Files.php';

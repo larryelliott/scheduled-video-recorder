@@ -26,6 +26,24 @@ def parse_obs_name(name: str) -> Optional[float]:
         return None
 
 
+def video_near_any(directories: list[str], started_local: float, window: float = 180) -> Optional[str]:
+    """video_near() across several folders; the closest match wins."""
+    best, best_diff = None, window + 1
+    for d in directories:
+        try:
+            for e in os.scandir(d):
+                if not (e.is_file() and e.name.lower().endswith(VIDEO_EXT)):
+                    continue
+                t = parse_obs_name(e.name)
+                if t is None:
+                    t = e.stat().st_ctime
+                if abs(t - started_local) < best_diff:
+                    best, best_diff = e.path, abs(t - started_local)
+        except OSError:
+            continue
+    return best if best_diff <= window else None
+
+
 def default_videos_dir() -> str:
     """OBS saves to the user's Videos folder unless told otherwise."""
     p = Path.home() / "Videos"
@@ -68,6 +86,8 @@ class RealObs:
     def __init__(self, cfg):
         self.cfg = cfg
         self.client = None
+        self.events = None
+        self.current_path: Optional[str] = None  # exact file OBS reported when the recording started
 
     # -- process ---------------------------------------------------------------------------
     def _running(self) -> bool:
@@ -102,6 +122,7 @@ class RealObs:
                 self.client = obsws.ReqClient(host=self.cfg.obs_host, port=self.cfg.obs_port,
                                               password=self.cfg.obs_password, timeout=5)
                 self.client.get_version()
+                self._start_events(obsws)
                 return
             except Exception as exc:  # the library raises several different types
                 last = exc
@@ -111,6 +132,35 @@ class RealObs:
 
     def disconnect(self) -> None:
         self.client = None
+        try:
+            if self.events is not None:
+                self.events.disconnect()
+        except Exception:
+            pass
+        self.events = None
+
+    def _start_events(self, obsws) -> None:
+        """OBS announces the exact file path when a recording starts; remember it so we never have to guess."""
+        if self.events is not None:
+            return
+        try:
+            ev = obsws.EventClient(host=self.cfg.obs_host, port=self.cfg.obs_port, password=self.cfg.obs_password, timeout=5)
+            outer = self
+
+            def on_record_state_changed(data):  # the name selects the OBS event (RecordStateChanged)
+                path = getattr(data, "output_path", None)
+                state = str(getattr(data, "output_state", "")).upper()
+                if path and "STARTED" in state:
+                    outer.current_path = path
+                    log.info("OBS is recording to %s", path)
+
+            ev.callback.register(on_record_state_changed)
+            self.events = ev
+        except Exception as exc:
+            log.warning("Could not subscribe to OBS recording events (falling back to searching folders): %s", exc)
+
+    def last_output_path(self) -> Optional[str]:
+        return self.current_path
 
     def _call(self, name: str, *args):
         self.connect()
@@ -138,25 +188,28 @@ class RealObs:
             return None
 
     def start(self) -> None:
+        self.current_path = None
         self._call("start_record")
 
     def stop(self) -> Optional[str]:
         r = self._call("stop_record")
         return getattr(r, "output_path", None)
 
-    def wait_for_file(self, since_local: float, timeout: float = 20) -> Optional[str]:
-        """After start(), find the file OBS is writing."""
-        directory = self.cfg.record_dir or self.record_dir() or default_videos_dir()
+    def wait_for_file(self, since_local: float, dirs: list[str], timeout: float = 20) -> Optional[str]:
+        """After start(), find the file OBS is writing: the path OBS announced, else the newest file in the candidate folders."""
         deadline = time.time() + timeout
-        while directory and time.time() < deadline:
-            found = newest_video(directory, since_local - 2)
-            if found:
-                return found
+        while time.time() < deadline:
+            if self.current_path and os.path.exists(self.current_path):
+                return self.current_path
+            for d in dirs:
+                found = newest_video(d, since_local - 2)
+                if found:
+                    return found
             time.sleep(1)
-        if directory:
-            return video_near(directory, since_local, 120)
-        log.warning("Cannot tell where OBS saves recordings. Set RECORD_DIR in .env.")
-        return None
+        found = video_near_any(dirs, since_local, 120)
+        if not found:
+            log.warning("Could not find the recording file. Looked in: %s", ", ".join(dirs) or "no folders")
+        return found
 
 
 class FakeObs:
@@ -208,8 +261,11 @@ class FakeObs:
                 self.proc.kill()
         return self.path
 
-    def wait_for_file(self, since_local: float, timeout: float = 20) -> Optional[str]:
+    def wait_for_file(self, since_local: float, dirs: list[str] = (), timeout: float = 20) -> Optional[str]:
         time.sleep(1)
+        return self.path
+
+    def last_output_path(self) -> Optional[str]:
         return self.path
 
 

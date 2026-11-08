@@ -2,6 +2,35 @@
 (function () {
   var base = (document.querySelector('meta[name=base]') || {}).content || '';
 
+  // Notices ("Saved.") fade away by themselves; tapping one dismisses it.
+  function dismiss(el) {
+    el.classList.add('hide');
+    setTimeout(function () { if (el.parentNode) { el.parentNode.removeChild(el); } }, 450);
+  }
+  document.querySelectorAll('[data-autoclose]').forEach(function (el) {
+    setTimeout(function () { dismiss(el); }, parseInt(el.getAttribute('data-autoclose'), 10) || 8000);
+    el.addEventListener('click', function () { dismiss(el); });
+  });
+
+  // Service page: refresh the status, video, times and recording sections every 10 s (the edit forms are left alone).
+  var live = document.querySelector('[data-live-url]');
+  if (live) {
+    var last = {};
+    setInterval(function () {
+      if (document.hidden) { return; }
+      fetch(live.getAttribute('data-live-url'), { credentials: 'same-origin', cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) { return; }
+          ['head', 'video', 'cut', 'rec'].forEach(function (k) {
+            var el = document.getElementById('svc-' + k);
+            if (el && typeof d[k] === 'string' && last[k] !== d[k]) { last[k] = d[k]; el.innerHTML = d[k]; }
+          });
+        })
+        .catch(function () {});
+    }, 10000);
+  }
+
   // Ask before risky actions.
   document.addEventListener('submit', function (e) {
     var msg = e.target.getAttribute && e.target.getAttribute('data-confirm');

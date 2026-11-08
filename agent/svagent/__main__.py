@@ -2,6 +2,7 @@
     python -m svagent            run the agent
     python -m svagent check      test ffmpeg, the server and OBS, then exit
     python -m svagent intro-test make a sample intro card to preview the layout
+    python -m svagent probe [FILE] describe a recording (codec, bitrate, keyframes); no FILE = the newest raw recording
 Options: --env FILE   use a different .env file;  --fake-obs  use a pretend OBS (development)
 """
 from __future__ import annotations
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import __version__, media
+from .winproc import hidden_kwargs
 from .config import Config
 
 
@@ -61,8 +63,11 @@ def check(cfg: Config) -> int:
         obs.ensure_running()
         obs.connect(timeout=30)
         rd = obs.record_dir()
-        results.append(ok("OBS WebSocket connects", True, f"recording={obs.is_recording()}, folder={rd}"))
-        results.append(ok("recording folder exists", bool((cfg.record_dir or rd) and Path(cfg.record_dir or rd).is_dir()), cfg.record_dir or rd or ""))
+        results.append(ok("OBS WebSocket connects", True, f"recording={obs.is_recording()}, OBS saves to {rd}"))
+        results.append(ok("OBS recording folder exists", bool(rd and Path(rd).is_dir()), rd or "OBS did not say"))
+        if cfg.record_dir and rd and os.path.normcase(os.path.normpath(cfg.record_dir)) != os.path.normcase(os.path.normpath(rd)):
+            results.append(ok("RECORD_DIR matches OBS's recording folder", False,
+                              f"RECORD_DIR={cfg.record_dir} but OBS saves to {rd}. Remove RECORD_DIR from .env, or point it at OBS's folder"))
     except Exception as exc:
         results.append(ok("OBS WebSocket connects", False, f"{exc}. Check OBS > Tools > WebSocket Server Settings, port and password"))
     try:
@@ -91,9 +96,51 @@ def intro_test(cfg: Config) -> int:
     return 0
 
 
+def probe_cmd(cfg: Config, file: str | None) -> int:
+    """Describes a recording so we can pick good OBS settings and decide whether stream-copy trimming is safe."""
+    import json
+    if not file:
+        from .obs import newest_video
+        roots = [d for d in (cfg.record_dir, str(Path.home() / "Videos")) if d and Path(d).is_dir()]
+        found = [p for p in (newest_video(d, 0) for d in roots) if p]
+        if not found:
+            print("No recording found. Give a file: python -m svagent probe \"C:\\path\\to\\file.mp4\"")
+            return 1
+        file = max(found, key=os.path.getmtime)
+    r = subprocess.run([cfg.ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", file],
+                       capture_output=True, text=True, **hidden_kwargs())
+    if r.returncode != 0:
+        print("ffprobe could not read the file:", r.stderr.strip()[:300])
+        return 1
+    data = json.loads(r.stdout)
+    print("File:", file)
+    fmt = data.get("format", {})
+    print(f"Container: {fmt.get('format_name')}  duration: {float(fmt.get('duration') or 0):.0f}s  size: {int(fmt.get('size') or 0) / 1e6:.0f} MB"
+          f"  overall bitrate: {int(fmt.get('bit_rate') or 0) / 1e6:.1f} Mbit/s")
+    for s in data.get("streams", []):
+        if s.get("codec_type") == "video":
+            print(f"Video: {s.get('codec_name')} {s.get('profile')} level {s.get('level')}  {s.get('width')}x{s.get('height')}  "
+                  f"{s.get('r_frame_rate')} fps  {s.get('pix_fmt')}  bitrate {int(s.get('bit_rate') or 0) / 1e6:.1f} Mbit/s")
+        elif s.get("codec_type") == "audio":
+            print(f"Audio: {s.get('codec_name')}  {s.get('channels')} ch  {s.get('sample_rate')} Hz  bitrate {int(s.get('bit_rate') or 0) / 1e3:.0f} kbit/s")
+    k = subprocess.run([cfg.ffprobe, "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey", "-show_entries",
+                        "frame=pts_time", "-of", "csv=p=0", "-read_intervals", "%+60", file], capture_output=True, text=True, **hidden_kwargs())
+    times = []
+    for line in k.stdout.split():
+        try:
+            times.append(float(line.strip(",")))
+        except ValueError:
+            pass
+    if len(times) > 1:
+        gaps = sorted(b - a for a, b in zip(times, times[1:]))
+        print(f"Keyframes: about every {gaps[len(gaps) // 2]:.1f}s (longest gap {gaps[-1]:.1f}s) in the first minute")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="svagent", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", nargs="?", default="run", choices=["run", "check", "intro-test"])
+    ap.add_argument("command", nargs="?", default="run", choices=["run", "check", "intro-test", "probe"])
+    ap.add_argument("file", nargs="?", help="recording to describe (probe only)")
     ap.add_argument("--env", help="path to an .env file")
     ap.add_argument("--fake-obs", action="store_true", help="pretend to be OBS (development only)")
     args = ap.parse_args()
@@ -104,6 +151,8 @@ def main() -> int:
         return check(cfg)
     if args.command == "intro-test":
         return intro_test(cfg)
+    if args.command == "probe":
+        return probe_cmd(cfg, args.file)
     if not cfg.server_url or not cfg.agent_token:
         print("SERVER_URL and AGENT_TOKEN must be set in .env", file=sys.stderr)
         return 2

@@ -140,6 +140,10 @@ check('job carries the intro and file name', $hb['job']['intro']['title'] === 'T
 
 Api::job(['service_id' => $sid, 'state' => 'running', 'progress' => 40, 'message' => 'trimming']);
 check('job shows as processing', Services::state(Services::get($sid))[0] === 'processing');
+$live = Pages::serviceLive($sid);
+check('service page live parts are produced', $live !== null && isset($live['head'], $live['video'], $live['cut'], $live['rec']));
+check('live video section shows a progress bar while processing', strpos($live['video'], 'progressbar') !== false && strpos($live['video'], '40%') !== false);
+check('whole service page renders', strpos(Pages::service($sid), 'id="svc-head"') !== false);
 $hb = Api::heartbeat(['state' => 'processing', 'busy_service_id' => $sid]);
 check('a running job is not offered again', $hb['job'] === null);
 Api::recording(['service_id' => $sid, 'event' => 'stopped', 'ts_utc' => Clock::now()]);
@@ -209,6 +213,11 @@ check('pretend readings do not count as the sensor checking in', (int)Monitor::d
 $t = Services::createTest();
 $hb = Api::heartbeat([]);
 check('test recording is offered to the PC', $hb['next_service']['id'] === $t && $hb['next_service']['is_test'] === 1);
+
+// ---- one-time notices (no message text in the address bar) ------------------------------------------------------
+[$fm, $ft] = Flash::decode(Flash::encode('Saved. Cafe & "quotes" <b>', 'bad'));
+check('flash notice survives the cookie round trip', $fm === 'Saved. Cafe & "quotes" <b>' && $ft === 'bad', $fm . '|' . $ft);
+check('a damaged flash cookie is ignored', Flash::decode('not-base64!!') === ['', 'ok']);
 
 // ---- spreadsheet link ---------------------------------------------------------------------------------------
 check('sheet link is built from SHEET_ID', Schedule::sheetUrl() === 'https://docs.google.com/spreadsheets/d/testsheet/edit#gid=0', (string)Schedule::sheetUrl());

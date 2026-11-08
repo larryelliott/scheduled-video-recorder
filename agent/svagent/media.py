@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,17 +27,28 @@ class MediaError(RuntimeError):
     pass
 
 
-def _kwargs() -> dict:
-    # No console window, and low priority so ffmpeg never starves OBS while it is still recording.
-    return hidden_kwargs(0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
+def _kwargs(low_priority: bool = True) -> dict:
+    # No console window; low priority while OBS is still recording so ffmpeg never starves it.
+    return hidden_kwargs(0x00004000 if low_priority else 0)  # BELOW_NORMAL_PRIORITY_CLASS
 
 
-def run(cmd: list[str], cwd: Optional[Path] = None, on_seconds: Optional[Callable[[float], None]] = None) -> None:
+def video_args(venc: Optional[dict]) -> list[str]:
+    """Encoder options. Default is software x264 at CRF 23 with the 'veryfast' preset; a hardware encoder can be chosen in .env."""
+    v = venc or {}
+    enc = v.get("encoder") or "libx264"
+    if enc == "libx264":
+        return ["-c:v", "libx264", "-preset", str(v.get("preset") or "veryfast"), "-crf", str(v.get("crf") or "23"),
+                "-pix_fmt", "yuv420p"]
+    return ["-c:v", enc, *shlex.split(v.get("extra") or ""), "-pix_fmt", "yuv420p"]
+
+
+def run(cmd: list[str], cwd: Optional[Path] = None, on_seconds: Optional[Callable[[float], None]] = None,
+        low_priority: bool = True) -> None:
     """Runs ffmpeg. With on_seconds, expects '-progress pipe:1' in cmd and reports output time."""
     log.debug("run: %s", " ".join(cmd))
     errors: list[str] = []
     with subprocess.Popen(cmd, cwd=str(cwd) if cwd else None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, **_kwargs()) as proc:
+                          text=True, **_kwargs(low_priority)) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.strip()
@@ -76,7 +89,8 @@ def _font(path: str) -> str:
     return path.replace("\\", "/").replace(":", "\\:")
 
 
-def render_intro(ffmpeg: str, intro: dict, info: dict, out_name: str, work: Path) -> None:
+def render_intro(ffmpeg: str, intro: dict, info: dict, out_name: str, work: Path, venc: Optional[dict] = None,
+                 low_priority: bool = True) -> None:
     dur = int(intro.get("duration", 5))
     fg, bg, accent = intro["text_color"], intro["background_color"], intro["accent_color"]
     font = _font(intro["font"])
@@ -98,25 +112,26 @@ def render_intro(ffmpeg: str, intro: dict, info: dict, out_name: str, work: Path
          "-f", "lavfi", "-i", f"color=c={bg}:s=1920x1080:r={info['fps']}:d={dur}",
          "-f", "lavfi", "-i", f"anullsrc=r={ar}:cl=stereo",
          "-vf", ",".join(filters), "-af", f"afade=t=out:st={max(0, dur - 1)}:d=1", "-t", str(dur),
-         "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "-r", info["fps"],
-         "-c:a", "aac", "-b:a", "160k", "-ar", str(ar), "-ac", "2", out_name], cwd=work)
+         *video_args(venc), "-r", info["fps"],
+         "-c:a", "aac", "-b:a", "160k", "-ar", str(ar), "-ac", "2", out_name], cwd=work, low_priority=low_priority)
 
 
 def trim(ffmpeg: str, src: str, start: float, duration: float, info: dict, out_name: str, work: Path,
-         progress: Progress = None) -> None:
+         progress: Progress = None, venc: Optional[dict] = None, low_priority: bool = True) -> None:
     # -ss before -i seeks quickly instead of decoding from the start of a long recording.
     def on_sec(sec: float) -> None:
         if progress and duration > 0:
             progress(min(1.0, sec / duration), "trimming")
 
     run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{start:.3f}", "-i", src, "-t", f"{duration:.3f}",
-         "-vf", "setsar=1", "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+         "-vf", "setsar=1", *video_args(venc),
          "-c:a", "aac", "-b:a", "192k", "-ar", str(info["audio_rate"]), "-ac", "2",
-         "-progress", "pipe:1", "-nostats", out_name], cwd=work, on_seconds=on_sec)
+         "-progress", "pipe:1", "-nostats", out_name], cwd=work, on_seconds=on_sec, low_priority=low_priority)
 
 
 def build_video(ffmpeg: str, ffprobe: str, src: str, start: float, duration: float, intro: dict,
-                out_path: Path, work: Path, progress: Progress = None) -> Path:
+                out_path: Path, work: Path, progress: Progress = None, venc: Optional[dict] = None,
+                low_priority: Optional[Callable[[], bool]] = None) -> Path:
     """Returns out_path. `start` and `duration` are seconds within the raw recording."""
     work.mkdir(parents=True, exist_ok=True)
     info = probe(ffprobe, src)
@@ -124,15 +139,19 @@ def build_video(ffmpeg: str, ffprobe: str, src: str, start: float, duration: flo
         raise MediaError(f"The sermon starts at {start:.0f}s but the recording is only {info['duration']:.0f}s long so far")
     if progress:
         progress(0.0, "making intro")
-    render_intro(ffmpeg, intro, info, "intro.mp4", work)
-    trim(ffmpeg, src, start, duration, info, "main.mp4", work, progress)
+    low = (lambda: True) if low_priority is None else low_priority
+    render_intro(ffmpeg, intro, info, "intro.mp4", work, venc, low())
+    t0 = time.time()
+    trim(ffmpeg, src, start, duration, info, "main.mp4", work, progress, venc, low())
+    took = time.time() - t0
+    log.info("Trimmed %.0fs of video in %.0fs (%.1fx real time)", duration, took, duration / max(took, 0.1))
     if progress:
         progress(1.0, "joining")
     (work / "concat.txt").write_text("file 'intro.mp4'\nfile 'main.mp4'\n", encoding="utf-8")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(out_path.stem + ".part.mp4")
     run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", "concat.txt",
-         "-c", "copy", "-movflags", "+faststart", str(tmp)], cwd=work)
+         "-c", "copy", "-movflags", "+faststart", str(tmp)], cwd=work, low_priority=low())
     final = probe(ffprobe, str(tmp))["duration"]
     expect = int(intro.get("duration", 5)) + duration
     if abs(final - expect) > 5:
