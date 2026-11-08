@@ -242,11 +242,12 @@ Http::$fetcher = function ($method, $url, $body, $headers) use (&$requests) {
 };
 $published = YouTubePublisher::publish($publishedFileId);
 $publishedPayload = json_decode($requests[0][2], true);
-$publicPath = (string)parse_url($publishedPayload['videoUrl'] ?? '', PHP_URL_PATH);
+$publicPath = (string)parse_url($publishedPayload['url'] ?? '', PHP_URL_PATH);
 preg_match('#/public-video/' . $publishedFileId . '/([A-Za-z0-9_-]{43})$#', $publicPath, $tokenMatch);
 check('publisher sends metadata and a scoped public video URL',
     $published['ok'] && $requests[0][0] === 'POST'
     && $requests[0][1] === 'https://script.google.com/macros/s/test/exec'
+    && ($publishedPayload['url'] ?? '') === ($publishedPayload['videoUrl'] ?? '')
     && ($publishedPayload['playlistId'] ?? '') === 'playlist-test'
     && ($publishedPayload['title'] ?? '') === Services::label(Services::get($sid))
     && isset($tokenMatch[1]), json_encode($publishedPayload));
