@@ -15,7 +15,21 @@
 #include <WiFiClientSecure.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
-#include "secrets.h"  // WIFI_SSID, WIFI_PASSWORD, API_URL, API_TOKEN
+#include "secrets.h"  // primary/fallback Wi-Fi credentials, API_URL, API_TOKEN
+
+// Keep existing local secrets.h files working during the credential rename.
+#ifndef WIFI_PRIMARY_SSID
+#define WIFI_PRIMARY_SSID WIFI_SSID
+#endif
+#ifndef WIFI_PRIMARY_PASSWORD
+#define WIFI_PRIMARY_PASSWORD WIFI_PASSWORD
+#endif
+#ifndef WIFI_FALLBACK_SSID
+#define WIFI_FALLBACK_SSID ""
+#endif
+#ifndef WIFI_FALLBACK_PASSWORD
+#define WIFI_FALLBACK_PASSWORD ""
+#endif
 
 const char* FW_VERSION = "2.0";
 const float LUX_DELTA = 50.0;                      // report when the light changes by more than this
@@ -35,10 +49,36 @@ unsigned long wifiDownSince = 0;
 
 void connectWifi() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.disconnect();
+
+  Serial.println("Connecting to primary Wi-Fi...");
+  WiFi.begin(WIFI_PRIMARY_SSID, WIFI_PRIMARY_PASSWORD);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000UL) {
     delay(250);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Connected to primary Wi-Fi.");
+    return;
+  }
+
+  if (strlen(WIFI_FALLBACK_SSID) == 0) {
+    Serial.println("Primary Wi-Fi connection failed; no fallback is configured.");
+    return;
+  }
+
+  Serial.println("Primary Wi-Fi unavailable; trying fallback Wi-Fi...");
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(WIFI_FALLBACK_SSID, WIFI_FALLBACK_PASSWORD);
+  t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000UL) {
+    delay(250);
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Connected to fallback Wi-Fi.");
+  } else {
+    Serial.println("Fallback Wi-Fi connection failed.");
   }
 }
 

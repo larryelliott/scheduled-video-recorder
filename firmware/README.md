@@ -5,10 +5,14 @@ which gives the system its cut points. It needs no changes to how it is mounted 
 
 1. Install the Arduino IDE and the ESP8266 board package.
 2. Install the libraries **BH1750** (Christopher Laws) and **NTPClient** (Fabrice Weinberg).
-3. Copy `pulpit-light/secrets.h.example` to `pulpit-light/secrets.h` and fill in Wi-Fi, `API_URL` and `API_TOKEN`.
+3. Copy `pulpit-light/secrets.h.example` to `pulpit-light/secrets.h` and fill in the primary Wi-Fi credentials, optional fallback Wi-Fi credentials, `API_URL` and `API_TOKEN`.
 4. Flash `pulpit-light/pulpit-light.ino`, open the Serial Monitor at 115200 baud, and look for `POST lux=... -> 200`.
 
 What changed from the old sketch: the token header, a `secrets.h` file, Wi-Fi recovery, readings are only marked as sent
 after the server accepts them, it also reports signal strength and firmware version, and the nightly restart now waits for
 24 h of uptime and a dark room instead of restarting on a fixed hour. The old restart may explain a daily gap
 of 60 to 75 minutes in `esp.log`.
+
+The sensor tries the primary Wi-Fi network first and tries the fallback if the primary cannot be reached. It repeats
+the same sequence during Wi-Fi recovery. Leave the fallback SSID empty if you do not need a second network. Existing
+local `secrets.h` files using `WIFI_SSID` and `WIFI_PASSWORD` remain supported as the primary network.
