@@ -68,7 +68,7 @@ final class YouTubePublisher
             return $claim;
         }
 
-        $timeout = max(15, min(300, Env::int('YOUTUBE_PUBLISH_TIMEOUT', 120)));
+        $timeout = max(15, min(360, Env::int('YOUTUBE_PUBLISH_TIMEOUT', 360)));
         @set_time_limit($timeout + 15);
         try {
             $response = Http::request('POST', $endpoint, $payload, ['Content-Type: application/json'], $timeout);

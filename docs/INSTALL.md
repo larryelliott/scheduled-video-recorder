@@ -18,7 +18,7 @@ Budget an evening for the first two and a few minutes for the sensor.
    For an existing SFTP install, preserve its settings and data when migrating: copy `~/video-manager-private/.env` and `~/video-manager-private/data/` into the checkout's `server/private/`, without overwriting checked-out source files. Keep any existing absolute `DB_PATH` or `VIDEO_DIR` values valid, or update them to the new locations before switching the document root.
 2. **Make the settings file.** Copy `server/private/.env.example` to `server/private/.env` and fill it in (it is commented).
    To enable YouTube publishing, set `GOOGLE_APPS_SCRIPT_URL` to the HTTPS web-app URL and `YOUTUBE_PLAYLIST_ID` to the destination playlist.
-   `YOUTUBE_PUBLISH_TIMEOUT` controls the outbound request timeout in seconds (default 120, capped at 300).
+   `YOUTUBE_PUBLISH_TIMEOUT` controls the outbound request timeout in seconds (default 360, capped at 360).
    The Apps Script endpoint must accept a JSON POST with `url`, `title`, `description`, and `playlistId` (`videoUrl` is also sent as an alias); return JSON with
    `{"ok":true,"videoId":"..."}` after a confirmed upload, or `{"ok":false,"error":"..."}` only when it knows the upload failed.
    Transport errors or unrecognized responses are treated as uncertain and cannot be retried in the app, to prevent duplicate uploads.

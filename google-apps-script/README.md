@@ -40,7 +40,7 @@ In `server/private/.env`, set:
 ```dotenv
 GOOGLE_APPS_SCRIPT_URL=https://script.google.com/macros/s/your-deployment-id/exec
 YOUTUBE_PLAYLIST_ID=your_playlist_id
-YOUTUBE_PUBLISH_TIMEOUT=120
+YOUTUBE_PUBLISH_TIMEOUT=360
 ```
 
 Get the playlist ID from the playlist URL (the value of its `list` parameter). Keep `.env` private and do not commit it. The video manager automatically sends a JSON POST after a non-test video finishes processing and is stored on the server:
