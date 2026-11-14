@@ -18,6 +18,7 @@ os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 
 from fake_server import FakeServer  # noqa: E402
 from svagent import cleanup, media  # noqa: E402
+from svagent.api import Server  # noqa: E402
 from svagent.config import Config  # noqa: E402
 from svagent.runner import Agent  # noqa: E402
 
@@ -90,6 +91,7 @@ class EndToEnd(unittest.TestCase):
         intro_image = base64.b64decode(done_event["intro_image"])
         self.assertTrue(intro_image.startswith(b"\xff\xd8\xff"), "YouTube notification intro frame should be a JPEG")
         self.assertEqual(len(self.srv.uploads), 1)
+        self.assertEqual(self.srv.uploads[0].stat().st_size, self.srv.upload_expected_bytes[0])
         d = duration(self.srv.uploads[0])
         self.assertAlmostEqual(d, 17.0, delta=1.5, msg=f"uploaded video is {d:.1f}s")
         self.assertTrue((self.cfg.output_dir / "2026-11-01-Test.mp4").is_file())
@@ -102,6 +104,15 @@ class EndToEnd(unittest.TestCase):
         names = {f["name"]: f["kind"] for f in self.srv.last_files}
         self.assertIn("raw", names.values())
         self.assertIn("final", names.values())
+
+    def test_upload_rejects_mismatched_server_acknowledgment(self):
+        source = self.tmp / "video.mp4"
+        source.write_bytes(b"complete video")
+        self.srv.upload_size_override = 3
+        server = Server(self.srv.url, self.srv.token)
+        with self.assertRaisesRegex(RuntimeError, "Server stored 3 bytes"):
+            server.upload(1, source.name, str(source), attempts=1)
+        self.assertEqual(self.srv.upload_expected_bytes, [source.stat().st_size])
 
     def test_keeps_schedule_when_server_is_down(self):
         now = time.time()

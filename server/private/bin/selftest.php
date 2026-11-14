@@ -236,6 +236,11 @@ $bad = Files::dir() . '/up2.part';
 file_put_contents($bad, 'abc');
 $up2 = Api::finishUpload($sid, 'bad.mp4', $bad, 999);
 check('truncated upload is rejected', empty($up2['ok']));
+$badExpected = Files::dir() . '/up3.part';
+file_put_contents($badExpected, 'abc');
+$up3 = Api::finishUpload($sid, 'bad-expected.mp4', $badExpected, -1, 999);
+check('truncated upload is rejected against the agent file size even without Content-Length',
+    empty($up3['ok']) && !is_file($badExpected));
 Env::set('GOOGLE_APPS_SCRIPT_URL', 'https://script.google.com/macros/s/test/exec');
 Env::set('YOUTUBE_PLAYLIST_ID', 'playlist-test');
 $automaticPublishRequests = 0;

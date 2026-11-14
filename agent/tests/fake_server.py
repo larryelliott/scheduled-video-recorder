@@ -18,6 +18,8 @@ class FakeServer:
         self.recording_events: list[dict] = []
         self.job_events: list[dict] = []
         self.uploads: list[Path] = []
+        self.upload_expected_bytes: list[int] = []
+        self.upload_size_override: int | None = None
         self.heartbeats = 0
         self.last_files: list = []
         fs = self
@@ -67,6 +69,7 @@ class FakeServer:
                     return
                 q = parse_qs(urlparse(self.path).query)
                 n = int(self.headers.get("Content-Length", 0))
+                fs.upload_expected_bytes.append(int(q.get("expected_bytes", [n])[0]))
                 dest = fs.upload_dir / q["name"][0]
                 with open(dest, "wb") as f:
                     left = n
@@ -77,7 +80,8 @@ class FakeServer:
                         f.write(chunk)
                         left -= len(chunk)
                 fs.uploads.append(dest)
-                self._send(200, {"ok": True, "size": n})
+                stored_size = n if fs.upload_size_override is None else fs.upload_size_override
+                self._send(200, {"ok": True, "size": stored_size})
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
