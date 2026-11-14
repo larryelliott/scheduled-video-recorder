@@ -63,7 +63,9 @@ final class App
                 fclose($in);
                 fclose($out);
                 $declared = isset($_SERVER['CONTENT_LENGTH']) ? (int)$_SERVER['CONTENT_LENGTH'] : -1;
-                $r = Api::finishUpload((int)($_GET['service_id'] ?? 0), (string)($_GET['name'] ?? ''), $tmp, $declared);
+                $expected = filter_var($_GET['expected_bytes'] ?? null, FILTER_VALIDATE_INT);
+                $r = Api::finishUpload((int)($_GET['service_id'] ?? 0), (string)($_GET['name'] ?? ''),
+                    $tmp, $declared, $expected === false ? -1 : (int)$expected);
                 json_out($r, !empty($r['ok']) ? 200 : 400);
             }
             json_out(['ok' => false, 'error' => 'Not found'], 404);

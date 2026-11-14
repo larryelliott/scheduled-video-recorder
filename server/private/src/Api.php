@@ -81,12 +81,20 @@ final class Api
     }
 
     /** Called after the router has copied the request body to $tmpPath. */
-    public static function finishUpload(int $serviceId, string $name, string $tmpPath, int $declaredLength): array
+    public static function finishUpload(
+        int $serviceId,
+        string $name,
+        string $tmpPath,
+        int $declaredLength,
+        int $expectedLength = -1
+    ): array
     {
         $got = (int)@filesize($tmpPath);
-        if ($declaredLength >= 0 && $got !== $declaredLength) {
+        if (($declaredLength >= 0 && $got !== $declaredLength)
+            || ($expectedLength >= 0 && $got !== $expectedLength)) {
             @unlink($tmpPath);
-            return ['ok' => false, 'error' => "Upload incomplete: got $got of $declaredLength bytes"];
+            $expected = $expectedLength >= 0 ? $expectedLength : $declaredLength;
+            return ['ok' => false, 'error' => "Upload incomplete: got $got of $expected bytes"];
         }
         if (Services::get($serviceId) === null) {
             @unlink($tmpPath);

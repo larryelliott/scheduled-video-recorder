@@ -52,8 +52,8 @@ Response:
 `running` updates progress and sends the processing-started notification once per attempt. A `done` request may include an `intro_image` field containing a small base64 JPEG. `done` requires the upload to have arrived, marks the video ready, and automatically publishes it to YouTube when publishing is configured (test videos are never published). The response can take as long as the configured YouTube publishing timeout.
 A job stuck in `running` for 10 minutes with the agent no longer reporting it is retried, up to 3 attempts.
 
-### `PUT /api/agent/upload?service_id=12&name=All-Saints-Day.mp4`
-Raw video bytes as the body (no multipart). The server checks the byte count against `Content-Length`.
+### `PUT /api/agent/upload?service_id=12&name=All-Saints-Day.mp4&expected_bytes=398123456`
+Raw video bytes as the body (no multipart). The agent sends the local file size as `expected_bytes`; the server checks the received body against that and `Content-Length` when available. The agent also verifies the returned stored size before reporting the job complete.
 Response: `{"ok": true, "size": 398123456, "file_id": 5}`
 
 ## Notification images

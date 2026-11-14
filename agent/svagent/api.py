@@ -88,11 +88,20 @@ class Server:
         for attempt in range(1, attempts + 1):
             body = ProgressFile(path, progress)
             try:
-                r = self.session.put(self.base + "/api/agent/upload", params={"service_id": service_id, "name": name},
+                expected_bytes = len(body)
+                r = self.session.put(self.base + "/api/agent/upload",
+                                     params={"service_id": service_id, "name": name, "expected_bytes": expected_bytes},
                                      data=body, timeout=(15, 1800))
-                if r.status_code == 200 and r.json().get("ok"):
-                    return r.json()
-                last = f"HTTP {r.status_code}: {r.text[:200]}"
+                response = r.json()
+                if r.status_code == 200 and isinstance(response, dict) and response.get("ok"):
+                    if response.get("size") != expected_bytes:
+                        last = (f"Server stored {response.get('size')} bytes; "
+                                f"the local file contains {expected_bytes}")
+                    else:
+                        return response
+                else:
+                    last = (f"HTTP {r.status_code}: {r.text[:200]}" if r.status_code != 200
+                            else f"Unexpected upload response: {r.text[:200]}")
             except (requests.RequestException, ValueError) as exc:
                 last = str(exc)
             finally:
